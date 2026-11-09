@@ -168,10 +168,12 @@ await t('application: conditions apply; HubSpot contacts, deal, program links; J
 });
 await t('permissions packet: emailed to the parent, then signed from the link; PDF to HubSpot; Jotform ticked', async () => {
   const r = await call({ action: 'send-waiver', token, email: 'mere@rua.nz' });
-  assert.equal(r.status, 200); assert.equal(r.body.app.step, 'deposit', 'can pay while waiting');
+  assert.equal(r.status, 200); assert.equal(r.body.app.step, 'waiting', 'no deposit until a parent signs');
+  const early = await call({ action: 'checkout', token, method: 'card' });
+  assert.equal(early.status, 409); assert.match(early.body.error, /needs to sign/);
   const m = mails.at(-1); assert.equal(m.to, 'mere@rua.nz'); const signToken = decodeURIComponent(/\/sign\?t=([^\s]+)/.exec(m.text)[1]);
   const info = await call(null, `?sign=${encodeURIComponent(signToken)}`);
-  assert.equal(info.body.student, 'Ana Rua'); assert.equal(info.body.under18, true); assert.equal(info.body.waiver.parts.length, 2);
+  assert.equal(info.body.student, 'Ana Rua'); assert.equal(info.body.under18, true); assert.equal(info.body.waiver.parts.length, 2); assert.equal(info.body.next, 'waiver');
   const bad = await call({ action: 'sign', signToken, input: { parentName: 'Mere', relationship: '', initials: {}, signature: '', agree: false } });
   assert.equal(bad.status, 400); assert.ok(bad.body.fields.parentName && bad.body.fields.signature && bad.body.fields.initials_part2);
   const big = 'data:image/png;base64,' + crypto.randomBytes(600).toString('base64');
@@ -184,6 +186,12 @@ await t('permissions packet: emailed to the parent, then signed from the link; P
   assert.ok(mails.some((m) => /^Signed: permissions packet/.test(m.subject) && m.attachments?.[0]?.filename.endsWith('.pdf')));
   assert.equal([...J.subs.values()][0].params['submission[75][0]'], 'Yes');
   assert.equal((await call({ action: 'sign', signToken, input: {} })).body.already, true);
+  const after = await call(null, `?sign=${encodeURIComponent(signToken)}`);
+  assert.equal(after.body.next, 'deposit', 'the parent goes straight on to the deposit'); assert.equal(after.body.cardFeeRate, 0.03);
+  // The parent pays from the signing link (no student token on their device).
+  const pc = await call({ action: 'checkout', signToken, method: 'card' });
+  assert.equal(pc.status, 200, JSON.stringify(pc.body)); assert.match(pc.body.url, /checkout\.stripe\.com/);
+  globalThis.__parentSession = [...S.sessions.values()].at(-1).id;
 });
 await t('signed PDF builds with a real signature image', async () => {
   const { waiverPdf } = await import('../netlify/functions/_lib/pdf.mjs');
@@ -194,11 +202,11 @@ await t('signed PDF builds with a real signature image', async () => {
 await t('deposit: card adds 3%; Stripe gets the deal id + base amount; webhook marks paid once', async () => {
   const r = await call({ action: 'checkout', token, method: 'card' });
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  const s = [...S.sessions.values()][0];
+  const s = [...S.sessions.values()].at(-2);
   assert.equal(s.amount_total, 180250); assert.equal(s.currency, 'nzd'); assert.equal(s.payment_method_types[0], 'card');
   assert.equal(s.metadata.hubspot_deal_id, [...H.deals.keys()][0]); assert.equal(s.metadata.base_amount, '1750'); assert.equal(s.metadata.source, 'ue-apply');
   const bank = await call({ action: 'checkout', token, method: 'bank' });
-  assert.equal([...S.sessions.values()][1].payment_method_types[0], 'nz_bank_account'); assert.equal([...S.sessions.values()][1].amount_total, 175000);
+  assert.equal([...S.sessions.values()].at(-1).payment_method_types[0], 'nz_bank_account'); assert.equal([...S.sessions.values()].at(-1).amount_total, 175000);
   // Stripe calls back.
   const ev = JSON.stringify({ type: 'checkout.session.completed', data: { object: { ...s, payment_status: 'paid', payment_intent: 'pi_X' } } });
   const ts = Math.floor(Date.now() / 1000);
@@ -214,6 +222,10 @@ await t('deposit: card adds 3%; Stripe gets the deal id + base amount; webhook m
   assert.equal(bad.status, 400);
   const back = await call(null, `?token=${encodeURIComponent(token)}`);
   assert.equal(back.body.app.step, 'done'); assert.equal(back.body.app.deposit.status, 'paid');
+  // Returning from Stripe on the parent's device (no token): just the outcome.
+  S.sessions.get(globalThis.__parentSession).payment_status = 'paid';
+  const pr = await call({ action: 'confirm', sessionId: globalThis.__parentSession });
+  assert.equal(pr.status, 200); assert.equal(pr.body.payment.status, 'paid'); assert.equal(pr.body.app, undefined);
   assert.equal(bank.status, 200);
 });
 await t('closed trip refuses new starts; resume still works', async () => {

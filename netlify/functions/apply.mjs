@@ -9,8 +9,8 @@
 //   POST { action: "submit", token, values }         full application
 //   POST { action: "send-waiver", token, email }     email a parent the signing link
 //   POST { action: "sign", token | signToken, input }
-//   POST { action: "checkout", token, method }       → { url } (Stripe)
-//   POST { action: "confirm", token, sessionId }     after Stripe redirects back
+//   POST { action: "checkout", token | signToken, method } → { url } (Stripe; only once a parent has signed)
+//   POST { action: "confirm", token?, sessionId }    after Stripe redirects back
 import * as A from "./_lib/applications.mjs";
 import { json, readJson, errorResponse, clientIp } from "./_lib/http.mjs";
 
@@ -32,7 +32,7 @@ export default async (req, context) => {
       case "submit": return json(await A.submit({ token: b.token, values: b.values }));
       case "send-waiver": return json(await A.sendForSignature({ token: b.token, email: b.email }));
       case "sign": return json(await A.sign({ token: b.token, signToken: b.signToken, input: b.input, ip: clientIp(req, context), userAgent: req.headers.get("user-agent") }));
-      case "checkout": return json(await A.checkout({ token: b.token, method: b.method }));
+      case "checkout": return json(await A.checkout({ token: b.token, signToken: b.signToken, method: b.method }));
       case "confirm": return json(await A.confirmDeposit({ token: b.token, sessionId: b.sessionId }));
       default: return json({ error: "Unknown action" }, 400);
     }

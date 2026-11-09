@@ -49,9 +49,9 @@ t('Jotform params: one form, files as URLs, checkbox fill', () => {
   assert.equal(p['submission[3][first]'], 'A'); assert.equal(p['submission[89]'], 'https://x/f1'); assert.equal(p['submission[75][0]'], 'Yes'); assert.equal(p['submission[64][full]'], '+64 21 1');
 });
 t('waiver: under-18 part, initials, signature, agreement', () => {
-  assert.equal(W.partsFor(W.DEFAULT_WAIVER, { under18: false }).length, 1);
+  assert.equal(W.partsFor(W.DEFAULT_WAIVER, { under18: false }).length, 2, 'every family signs both parts');
   const sig = 'data:image/png;base64,' + 'A'.repeat(400);
-  const ok = W.validateSignature(W.DEFAULT_WAIVER, { parentName: 'Mere Rua', relationship: 'Mother', initials: { part1: 'm.r' }, signature: sig, agree: true }, { under18: false });
+  const ok = W.validateSignature(W.DEFAULT_WAIVER, { parentName: 'Mere Rua', relationship: 'Mother', initials: { part1: 'm.r', part2: 'MR' }, signature: sig, agree: true }, { under18: false });
   assert.equal(ok.ok, true); assert.equal(ok.clean.initials.part1, 'MR');
   const bad = W.validateSignature(W.DEFAULT_WAIVER, { parentName: 'Mere', initials: {}, signature: 'x' }, { under18: true });
   assert.deepEqual(Object.keys(bad.errors).sort(), ['agree', 'initials_part1', 'initials_part2', 'parentName', 'relationship', 'signature']);

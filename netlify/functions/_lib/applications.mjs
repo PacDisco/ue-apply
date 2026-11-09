@@ -3,11 +3,15 @@
 //   1 About you      start()     → row + resume token, HubSpot contact
 //   2 Application    submit()    → validated answers; HubSpot contacts, deal and
 //                                  program links; Jotform submission (portals)
-//   3 Permissions    sign()      → parent signs here, or sendForSignature()
-//                                  emails them a link; PDF to HubSpot; Jotform
-//                                  "signed the permissions packet" ticked
-//   4 Deposit        checkout()  → Stripe; confirmDeposit()/webhook marks paid
-//                                  (the dashboard payment sync logs it on the deal)
+//   3 Permissions    sign()      → a parent signs here, or sendForSignature()
+//                                  emails them a link to sign (and then pay)
+//                                  from their own device; PDF to HubSpot;
+//                                  Jotform "signed the permissions packet" ticked
+//   4 Deposit        checkout()  → Stripe — only once a parent has signed (every
+//                                  student is under 18). From the student's
+//                                  link or the parent's signing link.
+//                                  confirmDeposit()/webhook marks it paid (the
+//                                  dashboard payment sync logs it on the deal)
 //
 // Statuses: started → applied → signed → paid. A trip whose school collects
 // payments skips step 4. The applicant's browser holds a random token; only
@@ -39,7 +43,8 @@ export function nextStep(app, trip) {
   if (!app.step1_at) return "about";
   if (!app.step2_at) return "application";
   const w = app.waiver?.status;
-  if (w !== "signed" && w !== "sent") return "waiver";
+  if (w === "sent") return "waiting"; // emailed to a parent, not signed yet
+  if (w !== "signed") return "waiver";
   if (trip?.schoolCollecting) return "done";
   if (app.deposit?.status === "paid") return "done";
   return "deposit";
@@ -249,6 +254,10 @@ export async function signInfo(signToken) {
   return {
     student: studentName(app), trip: publicTrip(trip), waiver: W.waiverOf(schema), under18: isUnder18(app),
     signed: app.waiver?.status === "signed" ? { parentName: app.waiver.parentName, signedAt: app.waiver.signedAt } : null,
+    // After signing, the parent can pay the deposit from the same page.
+    next: app.waiver?.status === "signed" ? nextStep(app, trip) : "waiver",
+    cardFeeRate: K.surchargeRates(schema).card,
+    deposit: app.deposit ? { status: app.deposit.status } : null,
     parent: (() => { const n = app.answers?.parent1Name; return n && typeof n === "object" ? `${n.first || ""} ${n.last || ""}`.trim() : String(n || ""); })(),
   };
 }
@@ -322,11 +331,17 @@ export function depositQuote(schema, trip, method) {
   return K.withSurcharge(schema, trip.deposit, method === "bank" ? "bank" : "card");
 }
 
-export async function checkout({ token, method }) {
-  const app = await byToken(token);
+/** From the student's resume token or the parent's signing link. */
+async function byTokenOrSign({ token, signToken }) {
+  return signToken ? appBySignToken(signToken) : byToken(token);
+}
+
+export async function checkout({ token, signToken, method }) {
+  const app = await byTokenOrSign({ token, signToken });
   const trip = await loadTrip(app.trip_slug);
   const step = nextStep(app, trip);
   if (step === "done") return { done: true, app: stateOf(app, trip) };
+  if (step === "waiting" || step === "waiver") throw bad("A parent or guardian needs to sign the permissions packet before the deposit can be paid.", 409);
   if (step !== "deposit") throw bad("Please finish the earlier steps first.");
   if (!trip.open && app.deposit?.status !== "processing") throw bad("Applications for this trip are closed.", 409);
   const { schema } = await publishedSchema();
@@ -343,11 +358,20 @@ export async function checkout({ token, method }) {
   return { url: session.url };
 }
 
-/** Back from Stripe: check the session ourselves (the webhook does the same). */
+/**
+ * Back from Stripe: check the session ourselves (the webhook does the same).
+ * With the student's token → their full state. Without (a parent paid from
+ * the signing link, on a device with no student token) → just the outcome.
+ */
 export async function confirmDeposit({ token, sessionId }) {
+  const session = await ST.getSession(sessionId);
+  if (!token) {
+    if (!session || session.metadata?.source !== "ue-apply") throw bad("We couldn't find that payment.", 404);
+    const status = await applySession(session);
+    return { payment: { status: status || "pending" } };
+  }
   const app = await byToken(token);
   const trip = await loadTrip(app.trip_slug);
-  const session = await ST.getSession(sessionId);
   if (session && session.metadata?.application_id === app.id) await applySession(session);
   const fresh = await appById(app.id);
   return { app: stateOf(fresh, trip) };
