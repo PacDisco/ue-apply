@@ -11,6 +11,11 @@
 
 Trips whose school collects payments (`school_collecting_payments` on the program) finish after step 3. A closed / full / past-closing-date trip refuses new applications; people already in can still finish.
 
+## Testing without filling it in
+
+- **Preview** — `apply.unearthededucation.org/<trip>?preview=1` (or *Preview ↗* on the dashboard's Trips tab). A bar at the top jumps to any step and has **Fill test answers** (fills the page, including a test signature on the permissions packet). Nothing is saved or sent — no application, HubSpot, Jotform, email or payment. Works on closed trips. Shows the *published* form.
+- **Test run** — `…/<trip>?test=1` (*Test run ↗*). A real application end to end, with **Fill test answers** on each page: everything is filled except the email addresses (type ones you can check, so the signing link and receipts reach you); upload questions get a small test image. Afterwards refund the deposit in Stripe, *Mark withdrawn* on the dashboard, and delete the test contacts/deal in HubSpot and the Jotform submission.
+
 ## How it fits together
 
 ```

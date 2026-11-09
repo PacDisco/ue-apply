@@ -9,6 +9,7 @@ import { dealName, splitName, parentsOf, studentProps } from '../netlify/functio
 import { verifyWebhook, bankMethodFor, minorUnits } from '../netlify/functions/_lib/stripe.mjs';
 import { compose } from '../netlify/functions/_lib/notify.mjs';
 import { fromJotformAnswer } from '../netlify/functions/_lib/import.mjs';
+import { sampleValues, previewReply } from '../public/test-kit.mjs';
 
 let n = 0; const t = (name, fn) => { fn(); n++; console.log('  ✓', name); };
 const schema = JSON.parse(readFileSync(new URL('./schema.json', import.meta.url)));
@@ -96,5 +97,26 @@ t('old Jotform answers convert to this form\'s shapes', () => {
   assert.deepEqual(fromJotformAnswer({ type: 'phone' }, { answer: { full: '+64 21 555' } }), { cc: '64', number: '21 555' });
   assert.deepEqual(fromJotformAnswer({ type: 'checkbox' }, { answer: 'A\nB' }), ['A', 'B']);
   assert.equal(fromJotformAnswer({ type: 'text' }, { answer: '' }), undefined);
+});
+t('test answers pass every check on both pages (and keep typed emails in a real test)', () => {
+  const s1 = sampleValues(schema, 'step1');
+  const s2 = sampleValues(schema, 'step2');
+  const all = { ...s1, ...s2, passportPhoto: [{ id: 'x', name: 'p.png' }] };
+  assert.deepEqual(K.validateStep(schema, 'step1', all).errors, {});
+  assert.deepEqual(K.validateStep(schema, 'step2', all).errors, {});
+  assert.equal(K.ageOn(s1.dob, '2026-11-09') < 18, true);
+  const kept = sampleValues(schema, 'step1', { keepEmails: true, current: { email: 'me@x.nz' } });
+  assert.equal(kept.email, 'me@x.nz');
+  assert.equal(sampleValues(schema, 'step2', { keepEmails: true }).parent1Email, undefined, 'left for the tester to type');
+  assert.equal(sampleValues(schema, 'step2', { current: { school: 'Otago Boys' } }).school, 'Otago Boys', 'prefilled school kept');
+});
+t('preview replies walk the steps without a server', () => {
+  const state = (step, answers, waiver) => ({ step, answers, waiver });
+  assert.equal(previewReply('start', { values: { a: 1 } }, { state }).app.step, 'application');
+  assert.equal(previewReply('submit', {}, { state }).app.step, 'waiver');
+  assert.equal(previewReply('send-waiver', { email: 'p@x' }, { state }).app.waiver.sentTo, 'p@x');
+  assert.equal(previewReply('sign', {}, { state, trip: {} }).app.step, 'deposit');
+  assert.equal(previewReply('sign', {}, { state, trip: { schoolCollecting: true } }).app.step, 'done');
+  assert.equal(previewReply('checkout', {}, { state }).preview, true);
 });
 console.log(`${n} passed`);
