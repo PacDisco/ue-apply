@@ -1,0 +1,396 @@
+{
+ "kind": "ue-application",
+ "settings": {
+  "cardFeeRate": 0.03,
+  "jotform": {
+   "formId": "251396787451873"
+  },
+  "texts": {},
+  "emails": {}
+ },
+ "steps": [
+  {
+   "key": "step1",
+   "title": "About you",
+   "intro": "",
+   "submitLabel": "Continue",
+   "sections": [
+    {
+     "key": "about",
+     "title": "",
+     "intro": "",
+     "fields": [
+      {
+       "key": "name",
+       "qid": "3",
+       "type": "fullname",
+       "label": "Name (**AS NOTED IN YOUR PASSPORT**)",
+       "required": true,
+       "jf": {
+        "name": "name",
+        "type": "control_fullname"
+       }
+      },
+      {
+       "key": "email",
+       "qid": "4",
+       "type": "email",
+       "label": "Student Email Address",
+       "required": true,
+       "jf": {
+        "name": "studentEmail",
+        "type": "control_email"
+       }
+      },
+      {
+       "key": "dob",
+       "qid": "76",
+       "type": "date",
+       "label": "Date of Birth",
+       "required": true,
+       "jf": {
+        "name": "dateOf",
+        "type": "control_datetime"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "step2",
+   "title": "Your application",
+   "intro": "",
+   "submitLabel": "Submit application",
+   "sections": [
+    {
+     "key": "s1",
+     "title": "About the student",
+     "intro": "",
+     "fields": [
+      {
+       "key": "q60",
+       "qid": "60",
+       "type": "html",
+       "label": "Unearthed Education Application Form &amp; Program Deposit payment is required a",
+       "html": "<h3><strong>Unearthed Education Application Form &amp; Program Deposit</strong></h3><p>payment is required at the end.</p>",
+       "hidden": true,
+       "jf": {
+        "name": "q60",
+        "type": "control_text"
+       }
+      }
+     ]
+    },
+    {
+     "key": "s2",
+     "title": "Student Information",
+     "intro": "",
+     "fields": [
+      {
+       "key": "school",
+       "qid": "13",
+       "type": "text",
+       "label": "What school do you attend?",
+       "required": true,
+       "prefill": "trip:school",
+       "jf": {
+        "name": "whatSchool",
+        "type": "control_textbox"
+       }
+      },
+      {
+       "key": "program",
+       "qid": "14",
+       "type": "hidden",
+       "label": "What program are you attending",
+       "source": "trip:name",
+       "jf": {
+        "name": "whatProgram",
+        "type": "control_dropdown"
+       }
+      },
+      {
+       "key": "tshirt",
+       "qid": "11",
+       "type": "radio",
+       "label": "Choose your T-Shirt Size",
+       "required": true,
+       "options": [
+        "XS",
+        "S",
+        "M",
+        "L",
+        "XL"
+       ],
+       "jf": {
+        "name": "tshirt",
+        "type": "control_radio"
+       }
+      },
+      {
+       "key": "portrait",
+       "qid": "12",
+       "type": "file",
+       "label": "Upload a portrait photo of yourself",
+       "accept": "image/*,.pdf,.heic",
+       "maxMb": 10,
+       "jf": {
+        "name": "portrait",
+        "type": "control_fileupload"
+       }
+      }
+     ]
+    },
+    {
+     "key": "s3",
+     "title": "Medical Details",
+     "intro": "",
+     "fields": [
+      {
+       "key": "asthma",
+       "qid": "16",
+       "type": "radio",
+       "label": "Respiratory Problems or Asthma?",
+       "required": true,
+       "options": [
+        "Yes",
+        "No"
+       ],
+       "sensitive": true,
+       "jf": {
+        "name": "asthma",
+        "type": "control_radio"
+       }
+      },
+      {
+       "key": "medicalMore",
+       "qid": "26",
+       "type": "textarea",
+       "label": "If you answered YES to any of the above, please provide more information",
+       "jf": {
+        "name": "medicalMore",
+        "type": "control_textarea"
+       },
+       "showIf": {
+        "match": "any",
+        "rules": [
+         {
+          "field": "asthma",
+          "op": "equals",
+          "value": "Yes"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "key": "s4",
+     "title": "Travel Information",
+     "intro": "",
+     "fields": [
+      {
+       "key": "holdPassport",
+       "qid": "42",
+       "type": "radio",
+       "label": "Do you hold a Passport?",
+       "required": true,
+       "options": [
+        "Yes",
+        "No"
+       ],
+       "sensitive": true,
+       "jf": {
+        "name": "holdPassport",
+        "type": "control_radio"
+       }
+      },
+      {
+       "key": "passportNumber",
+       "qid": "44",
+       "type": "text",
+       "label": "Passport Number",
+       "sensitive": true,
+       "jf": {
+        "name": "passportNumber",
+        "type": "control_textbox"
+       },
+       "showIf": {
+        "match": "any",
+        "rules": [
+         {
+          "field": "holdPassport",
+          "op": "equals",
+          "value": "Yes"
+         }
+        ]
+       }
+      },
+      {
+       "key": "passportPhoto",
+       "qid": "89",
+       "type": "file",
+       "label": "Passport photo page",
+       "accept": "image/*,.pdf,.heic",
+       "maxMb": 10,
+       "sensitive": true,
+       "jf": {
+        "name": "passportCover",
+        "type": "control_fileupload"
+       },
+       "showIf": {
+        "match": "any",
+        "rules": [
+         {
+          "field": "holdPassport",
+          "op": "equals",
+          "value": "Yes"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "key": "s5",
+     "title": "Emergency contact information",
+     "intro": "",
+     "fields": [
+      {
+       "key": "parent1Name",
+       "qid": "49",
+       "type": "text",
+       "label": "Primary Contact Name",
+       "required": true,
+       "jf": {
+        "name": "primaryContact",
+        "type": "control_textbox"
+       }
+      },
+      {
+       "key": "parent1Email",
+       "qid": "50",
+       "type": "email",
+       "label": "Primary Contact Email",
+       "required": true,
+       "jf": {
+        "name": "primaryContact50",
+        "type": "control_email"
+       }
+      },
+      {
+       "key": "parent1Phone",
+       "qid": "64",
+       "type": "phone",
+       "label": "Primary Contact Phone Number",
+       "required": true,
+       "jf": {
+        "name": "primaryContact64",
+        "type": "control_phone"
+       }
+      },
+      {
+       "key": "parent1Relationship",
+       "qid": "51",
+       "type": "text",
+       "label": "Relationship to student",
+       "jf": {
+        "name": "relationshipTo",
+        "type": "control_textbox"
+       }
+      },
+      {
+       "key": "secondary",
+       "qid": "54",
+       "type": "radio",
+       "label": "Would you like to enter a secondary emergency contact?",
+       "options": [
+        "Yes",
+        "No"
+       ],
+       "jf": {
+        "name": "secondary",
+        "type": "control_radio"
+       }
+      },
+      {
+       "key": "parent2Name",
+       "qid": "55",
+       "type": "text",
+       "label": "Secondary emergency contact name",
+       "jf": {
+        "name": "secondaryEmergency",
+        "type": "control_textbox"
+       },
+       "showIf": {
+        "match": "any",
+        "rules": [
+         {
+          "field": "secondary",
+          "op": "equals",
+          "value": "Yes"
+         }
+        ]
+       }
+      },
+      {
+       "key": "parent2Email",
+       "qid": "56",
+       "type": "email",
+       "label": "Secondary emergency contact email",
+       "jf": {
+        "name": "secondaryEmergency56",
+        "type": "control_email"
+       },
+       "showIf": {
+        "match": "any",
+        "rules": [
+         {
+          "field": "secondary",
+          "op": "equals",
+          "value": "Yes"
+         }
+        ]
+       }
+      },
+      {
+       "key": "q73",
+       "qid": "73",
+       "type": "html",
+       "label": "Please read and sign the permissions packet before moving onto the next step.",
+       "html": "Please read and sign the permissions packet before moving onto the next step.",
+       "hidden": true,
+       "jf": {
+        "name": "q73",
+        "type": "control_text"
+       }
+      },
+      {
+       "key": "waiverSigned",
+       "qid": "75",
+       "type": "hidden",
+       "label": "I have completely read and signed the permissions packet",
+       "source": "waiver:signed",
+       "jf": {
+        "name": "iHave",
+        "type": "control_checkbox"
+       }
+      },
+      {
+       "key": "currency",
+       "qid": "78",
+       "type": "hidden",
+       "label": "Currency",
+       "source": "trip:currency",
+       "jf": {
+        "name": "currency",
+        "type": "control_dropdown"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
