@@ -120,3 +120,21 @@ t('preview replies walk the steps without a server', () => {
   assert.equal(previewReply('checkout', {}, { state }).preview, true);
 });
 console.log(`${n} passed`);
+
+// Added questions get their own IDs (x10000, x10001…), and duplicates from older drafts are repaired.
+{
+  const { nextQid, repairSyntheticQids, lintSchema } = await import('../public/form-kit.mjs');
+  const s = { steps: [{ key: 'step1', sections: [{ fields: [
+    { key: 'name', qid: '3', type: 'fullname', label: 'Name' },
+    { key: 'email', qid: '4', type: 'email', label: 'Email' },
+    { key: 'parentName', qid: 'x10000', type: 'text', label: 'Parent Name' },
+    { key: 'parentsEmail', qid: 'x10000', type: 'email', label: "Parent's Email" },
+  ] }] }] };
+  assert.equal(nextQid(s), '10001');
+  assert.ok(lintSchema(s).some((l) => /both use Jotform field ID x10000/.test(l.message)));
+  assert.equal(repairSyntheticQids(s), 1);
+  assert.equal(s.steps[0].sections[0].fields[3].qid, 'x10001');
+  assert.ok(!lintSchema(s).some((l) => /both use/.test(l.message)));
+  assert.equal(repairSyntheticQids(s), 0);
+  console.log('ok synthetic qids');
+}
