@@ -16,6 +16,7 @@ let n = 0; const t = async (name, fn) => { await fn(); n++; console.log('  ✓',
 const pool = new pg.Pool({ connectionString: process.env.TEST_PG_URL || 'postgres://postgres@127.0.0.1:55432/apply' });
 try { await pool.query('select 1'); } catch { console.log('  – flow tests skipped (no Postgres)'); process.exit(0); }
 await pool.query(readFileSync(new URL('./MIGRATION-ue-apply.sql', import.meta.url), 'utf8'));
+await pool.query(readFileSync(new URL('./MIGRATION-ue-apply-submission-ids.sql', import.meta.url), 'utf8'));
 await pool.query('TRUNCATE ue_apply_files, ue_applications, ue_apply_trips, ue_apply_form_versions, ue_apply_forms CASCADE');
 const sql = { query: async (text, p = []) => (await pool.query(text, p)).rows };
 
@@ -67,12 +68,15 @@ const jotform = async (url, opts = {}) => {
   let mm;
   if ((mm = /^\/form\/(\d+)\/submissions$/.exec(u.pathname)) && opts.method === 'POST') { const id = String(J.next++); J.subs.set(id, { form: mm[1], params }); return res({ responseCode: 200, content: { submissionID: id } }); }
   if ((mm = /^\/submission\/(\d+)$/.exec(u.pathname)) && opts.method === 'POST') { Object.assign(J.subs.get(mm[1]).params, params); return res({ responseCode: 200, content: {} }); }
+  if ((mm = /^\/submission\/(\d+)$/.exec(u.pathname))) return J.subs.has(mm[1]) || mm[1] === '999' ? res({ responseCode: 200, content: { id: mm[1], from: 'jotform' } }) : res({ responseCode: 404, message: 'not found' }, 404);
   if ((mm = /^\/form\/(\d+)\/submissions$/.exec(u.pathname))) {
-    return res({ responseCode: 200, content: mm[1] === '251396787451873' ? [{ id: '999', created_at: '2026-05-01 10:00:00', status: 'ACTIVE', answers: {
+    J.lastList = u.searchParams.toString();
+    const mirrored = [...J.subs.entries()].filter(([, v]) => v.form === mm[1]).map(([id]) => ({ id, from: 'jotform', status: 'ACTIVE', answers: {} }));
+    return res({ responseCode: 200, content: mm[1] === '251396787451873' ? [...mirrored, { id: '999', created_at: '2026-05-01 10:00:00', status: 'ACTIVE', answers: {
       3: { type: 'control_fullname', answer: { first: 'Ruby', last: 'Old' } }, 4: { type: 'control_email', answer: 'ruby@old.nz' },
       76: { type: 'control_datetime', answer: { year: '2010', month: '03', day: '04' } }, 11: { type: 'control_radio', answer: 'M' },
       89: { type: 'control_fileupload', answer: ['https://www.jotform.com/uploads/x/251396787451873/999/passport.jpg'] },
-    } }] : [] });
+    } }] : [{ id: '700', from: 'jotform-other-form' }] });
   }
   throw new Error(`unhandled Jotform ${u.pathname}`);
 };
@@ -252,6 +256,68 @@ await t('service: key required; resync; Add from HubSpot imports the Jotform app
   assert.equal(a.status, 'imported'); assert.equal(a.hubspot_deal_id, '88'); assert.equal(a.jotform_submission_id, '999');
   assert.equal(a.answers.dob, '2010-03-04'); assert.equal(a.answers.tshirt, 'M'); assert.equal(a.answers.passportPhoto[0].url, 'https://www.jotform.com/uploads/x/251396787451873/999/passport.jpg');
   assert.equal((await svc({ action: 'import', email: 'ruby@old.nz' })).status, 409);
+});
+
+await t('portal data source (/api/jotform): ours from the database, the rest from Jotform', async () => {
+  const api = (await import('../netlify/functions/jotform-api.mjs')).default;
+  const get = async (path, key = 'jf') => { const r = await api(new Request(`https://apply.test/api/jotform${path}${path.includes('?') ? '&' : '?'}apiKey=${key}`)); const text = await r.text(); return { status: r.status, body: text ? JSON.parse(text) : null }; };
+  assert.equal((await get('/form/251396787451873/submissions', 'nope')).status, 401);
+  const [ana] = await sql.query(`SELECT * FROM ue_applications WHERE lower(email) = 'ana@rua.nz'`);
+  assert.ok(ana.jotform_submission_id); assert.equal(ana.submission_id, ana.jotform_submission_id, 'mirror sets the permanent id');
+  // An application Jotform never got (copy off / failed).
+  await pool.query(`INSERT INTO ue_applications (email, first_name, last_name, trip_slug, program_id, program_name, status, answers, step1_at, step2_at, submission_id)
+    VALUES ('neon@only.nz', 'Neon', 'Only', 'otago-borneo-2027', '57951798456', 'Otago Boys High School - Borneo 2027', 'applied', $1, now(), now(), '9000000000000000001')`,
+    [JSON.stringify({ name: { first: 'Neon', last: 'Only' }, email: 'neon@only.nz', dob: '2011-01-02', tshirt: 'S' })]);
+  // A half-finished one isn't an application yet.
+  await pool.query(`INSERT INTO ue_applications (email, trip_slug, status, answers, step1_at) VALUES ('half@way.nz', 'otago-borneo-2027', 'started', '{}', now())`);
+
+  const list = await get('/form/251396787451873/submissions?limit=1000&offset=0');
+  assert.equal(list.status, 200); assert.match(J.lastList, /apiKey=jf/); assert.match(J.lastList, /limit=1000/);
+  const ids = list.body.content.map((s) => s.id);
+  assert.equal(ids[0], '9000000000000000001', 'database-only application first');
+  const mine = list.body.content.find((s) => s.id === ana.jotform_submission_id);
+  assert.equal(mine.source, 'apply.unearthededucation.org', 'ours replaces the Jotform copy');
+  assert.equal(mine.answers['4'].answer, 'ana@rua.nz'); assert.equal(mine.answers['4'].type, 'control_email');
+  assert.equal(mine.answers['14'].answer, 'Otago Boys High School - Borneo 2027', 'hidden program answer filled');
+  assert.deepEqual(mine.answers['75'].answer, ['Yes'], 'permissions packet signed');
+  assert.match(mine.answers['89'].answer[0], /^https:\/\/apply\.test\/api\/file\//);
+  assert.ok(ids.includes('999'), 'old Jotform-only applicant still there');
+  assert.ok(!list.body.content.some((s) => s.answers?.['4']?.answer === 'half@way.nz'));
+  const page2 = await get('/form/251396787451873/submissions?limit=1000&offset=1000');
+  assert.ok(!page2.body.content.some((s) => s.id === '9000000000000000001'), 'extras only on the first page');
+  // Other forms (document uploads) pass straight through.
+  const other = await api(new Request('https://apply.test/api/jotform/form/261220345497052/submissions?apiKey=svc'));
+  assert.equal(other.status, 200);
+
+  const one = await get(`/submission/${ana.jotform_submission_id}`);
+  assert.equal(one.body.content.source, 'apply.unearthededucation.org');
+  assert.equal((await get('/submission/9000000000000000001')).body.content.answers['3'].answer.first, 'Neon');
+
+  // Leader edit: saved here, and copied to the Jotform submission while it exists.
+  const edit = await api(new Request(`https://apply.test/api/jotform/submission/${ana.jotform_submission_id}?apiKey=jf`, {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ 'submission[3_first]': 'Anahera', 'submission[76_day]': '09', 'submission[44]': 'LA999999', 'submission[89]': 'https://evil/x.jpg', 'submission[64]': '+64 21 777 8888' }).toString(),
+  }));
+  const eb = await edit.json();
+  assert.equal(edit.status, 200); assert.deepEqual(eb.content.ignored, ['submission[89]']);
+  const [after] = await sql.query(`SELECT answers, first_name FROM ue_applications WHERE id = $1`, [ana.id]);
+  assert.equal(after.answers.name.first, 'Anahera'); assert.equal(after.first_name, 'Anahera');
+  assert.equal(after.answers.dob.slice(-2), '09'); assert.equal(after.answers.passportNumber, 'LA999999');
+  assert.deepEqual(after.answers.parent1Phone, { cc: '64', number: '21 777 8888' });
+  assert.equal(after.answers.passportPhoto.length, ana.answers.passportPhoto.length, 'files untouched');
+  assert.equal(J.subs.get(ana.jotform_submission_id).params['submission[3_first]'], 'Anahera', 'copied to Jotform');
+  assert.equal((await get(`/submission/${ana.jotform_submission_id}`)).body.content.answers['3'].answer.first, 'Anahera');
+
+  // Jotform switched off: only ours; nothing reaches Jotform.
+  process.env.JOTFORM_FALLBACK = 'off';
+  J.lastList = null;
+  const own = await get('/form/251396787451873/submissions?limit=1000');
+  assert.equal(J.lastList, null);
+  assert.ok(own.body.content.some((s) => s.id === ana.submission_id) && own.body.content.some((s) => s.id === '9000000000000000001'));
+  assert.ok(!own.body.content.some((s) => s.id === '999'));
+  assert.deepEqual((await get('/form/261220345497052/submissions')).body.content, []);
+  assert.equal((await get('/submission/999')).status, 404);
+  delete process.env.JOTFORM_FALLBACK;
 });
 
 await pool.end();

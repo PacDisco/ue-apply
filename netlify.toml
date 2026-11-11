@@ -46,3 +46,7 @@
   from = "/:slug"
   to = "/index.html"
   status = 200
+
+# The portals' data source (/api/jotform) can page through every application.
+[functions."jotform-api"]
+  timeout = 26

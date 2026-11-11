@@ -202,7 +202,15 @@ export async function mirrorToJotform(app, { schema, trip, formId, waiverSigned 
     return { id: app.jotform_submission_id, updated: true };
   }
   const sid = await JF.createSubmission(formId, params);
-  await q(`UPDATE ue_applications SET jotform_submission_id = $2 WHERE id = $1`, [app.id, sid]);
+  // The Jotform ID becomes the application's permanent submission ID — it's
+  // the ID the portals have seen for it (see /api/jotform).
+  await q(`UPDATE ue_applications SET jotform_submission_id = $2, submission_id = $2 WHERE id = $1`, [app.id, sid])
+    .catch(async (err) => {
+      // Before MIGRATION-ue-apply-submission-ids.sql has been run.
+      if (!/submission_id/.test(String(err?.message))) throw err;
+      await q(`UPDATE ue_applications SET jotform_submission_id = $2 WHERE id = $1`, [app.id, sid]);
+    });
+  app.submission_id = sid;
   app.jotform_submission_id = sid;
   return { id: sid, created: true };
 }

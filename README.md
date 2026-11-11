@@ -54,12 +54,31 @@ Trips whose school collects payments (`school_collecting_payments` on the progra
    | `SMTP_USER` / `SMTP_PASS` | the Unearthed mailbox + Google App Password (as the portal's magic-link email) |
    | `UE_APPLY_ALERT_EMAIL` | who hears about new applications and deposits (comma-separate; `off` to disable) |
    | `UE_PORTAL_URL` | the student portal, linked in the deposit email |
-   | optional | `SMTP_FROM_NAME` (default "Unearthed Education"), `UE_DEAL_PIPELINE` (default 836668844), `UE_STUDENT_LABEL` / `UE_PARENT_LABEL` (default Student / Parent), `UE_COMPANY_TAG`, `UE_BANK_DEBIT_CURRENCIES` (default NZD), `JOTFORM_MIRROR=off`, `HUBSPOT_SYNC=off`, `DASHBOARD_URL` |
+   | optional | `SMTP_FROM_NAME` (default "Unearthed Education"), `UE_DEAL_PIPELINE` (default 836668844), `UE_STUDENT_LABEL` / `UE_PARENT_LABEL` (default Student / Parent), `UE_COMPANY_TAG`, `UE_BANK_DEBIT_CURRENCIES` (default NZD), `JOTFORM_MIRROR=off`, `JOTFORM_FALLBACK=off`, `JOTFORM_UPSTREAM_URL`, `HUBSPOT_SYNC=off`, `DASHBOARD_URL` |
 
 4. **Stripe webhook** (Unearthed account): Developers → Webhooks → `https://apply.unearthededucation.org/api/stripe-webhook`, events `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`. Signing secret → `STRIPE_WEBHOOK_SECRET`. The portal's own checkouts are ignored here.
 5. **Dashboard** — on pd-dashboard set `UE_APPLY_SITE_URL=https://apply.unearthededucation.org` and `UE_APPLY_SERVICE_KEY`. Open **Unearthed Application Form** → *Import from Jotform* → check the questions → *Permissions packet* → *Trips & links* (one link per school trip) → **Publish**.
 6. **Portals** — on both Unearthed portal sites set `APPLY_SERVICE_KEY` (same secret) and deploy their updated `get-document` functions, so passport and photo files uploaded here open in the portals.
 7. **School launch pages** — link each school's page on the Unearthed website to its `apply.unearthededucation.org/<trip>` link. UTM parameters on the link are recorded.
+
+## The portals' data source (moving off Jotform)
+
+`/api/jotform/*` on this site is a **Jotform-compatible API** in front of this site's database. Point both Unearthed portals at it and they read applications from here instead of Jotform — no portal code changes, because it answers the same requests (`GET /form/{id}/submissions`, `GET`/`POST /submission/{id}`) with the same shapes and field IDs.
+
+- **Applications made here** are served from this database. Leader edits from the portals are saved here (and copied to the Jotform submission while `JOTFORM_MIRROR` is on). Uploaded files can't be changed through it.
+- **Everything else** — old applicants who only exist in Jotform, the document-upload form (261220345497052), form details — goes straight through to Jotform while `JOTFORM_FALLBACK` is on (default).
+- Every application has a permanent `submission_id`: its Jotform submission ID when it was copied to Jotform, otherwise a 19-digit ID starting with 9. That's the ID the portals see.
+- A withdrawn application reads as a deleted submission, so it drops out of the portals.
+- Auth: the portals already send their Jotform key; it must match this site's `JOTFORM_API_KEY` (or be `APPLY_SERVICE_KEY`).
+
+**Switching a portal over** (do the SQL and this site's deploy first):
+1. Run `MIGRATION-ue-apply-submission-ids.sql` (pd-dashboard repo) in the Neon SQL editor.
+2. Deploy this site.
+3. On the portal's Netlify site: `JOTFORM_BASE_URL` = `https://apply.unearthededucation.org/api/jotform`, then redeploy. Undo = delete the variable and redeploy.
+
+**Later, to drop Jotform entirely:** copy every old Jotform applicant (and their files) into this database, replace the document-upload form, then `JOTFORM_MIRROR=off` and `JOTFORM_FALLBACK=off` here. The portals keep working unchanged.
+
+Optional here: `JOTFORM_UPSTREAM_URL` (real Jotform, default `https://api.jotform.com`; never this site).
 
 ## Before switching the old Jotform off
 
@@ -69,4 +88,4 @@ While applications still come in on the old Jotform form, its own payment field 
 
 ## Tests
 
-`npm test` (pure) · `npm run test:flow` (needs a local Postgres at `TEST_PG_URL`, default `postgres://postgres@127.0.0.1:55432/apply`; HubSpot, Jotform, Stripe, Blobs and email are faked).
+`npm test` (pure, incl. the portals' data source) · `npm run test:flow` (needs a local Postgres at `TEST_PG_URL`, default `postgres://postgres@127.0.0.1:55432/apply`; HubSpot, Jotform, Stripe, Blobs and email are faked).

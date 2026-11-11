@@ -6,7 +6,7 @@
   "description": "Unearthed Education online application (apply.unearthededucation.org): application, permissions packet and deposit. Questions, trips and wording are managed in pd-dashboard → Unearthed Application Form.",
   "engines": { "node": ">=20" },
   "scripts": {
-    "test": "node test/kit.test.mjs",
+    "test": "node test/kit.test.mjs && node test/gateway.test.mjs",
     "test:flow": "node test/flow.test.mjs",
     "test:ui": "node test/ui.smoke.mjs"
   },
