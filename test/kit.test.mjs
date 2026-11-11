@@ -159,3 +159,38 @@ console.log(`${n} passed`);
   assert.ok(K2.allFields(schema).some(({ field }) => field.key === 'parent1Name'));
   console.log('ok teacher form');
 }
+
+// Middle names on full-name fields with `middle: true`.
+{
+  const K3 = await import('../public/form-kit.mjs');
+  const s = JSON.parse(JSON.stringify(schema));
+  K3.fieldByKey(s, 'name').middle = true;
+  const v = K3.validateStep(s, 'step1', { name: { first: ' Ruby ', middle: ' Isla ', last: 'Thornburgh' }, email: 'r@t.nz', dob: '2010-01-01' });
+  assert.ok(v.ok); assert.deepEqual(v.clean.name, { first: 'Ruby', middle: 'Isla', last: 'Thornburgh' });
+  assert.equal(K3.valueText(K3.fieldByKey(s, 'name'), v.clean.name), 'Ruby Isla Thornburgh');
+  // Optional: no middle name is fine and nothing empty is stored.
+  const v2 = K3.validateStep(s, 'step1', { name: { first: 'Ana', middle: '', last: 'Rua' }, email: 'a@r.nz', dob: '2010-01-01' });
+  assert.ok(v2.ok); assert.deepEqual(v2.clean.name, { first: 'Ana', last: 'Rua' });
+  // Not asked → not stored.
+
+  // Jotform shapes carry it.
+  assert.equal(K3.toJotformParams(s, { name: v.clean.name })['submission[3][middle]'], 'Isla');
+  assert.equal(K3.toJotformAnswers(s, { name: v.clean.name })['3'].answer.middle, 'Isla');
+  assert.ok(K3.teacherSchemaFrom(s).schema && K3.fieldByKey(K3.teacherSchemaFrom(s).schema, 'name').middle);
+  console.log('ok middle names');
+}
+{
+  const K4 = await import('../public/form-kit.mjs');
+  // The applicant's name asks for middle names on both forms with no setting…
+  const t = K4.teacherSchemaFrom(schema).schema;
+  delete K4.fieldByKey(t, 'name').middle;
+  for (const sch of [schema, t]) {
+    const v = K4.validateStep(sch, 'step1', { name: { first: 'A', middle: 'Mid', last: 'B' }, email: 'a@b.nz', dob: '1990-01-01' });
+    assert.equal(v.clean.name.middle, 'Mid', K4.formKind(sch));
+  }
+  // …unless switched off; other names only when ticked.
+  const off = JSON.parse(JSON.stringify(schema)); K4.fieldByKey(off, 'name').middle = false;
+  assert.equal(K4.validateStep(off, 'step1', { name: { first: 'A', middle: 'Mid', last: 'B' }, email: 'a@b.nz', dob: '2010-01-01' }).clean.name.middle, undefined);
+  assert.equal(K4.asksMiddle(K4.fieldByKey(t, 'emergencyName')), false);
+  console.log('ok middle names on both forms');
+}

@@ -20,7 +20,7 @@ export function fromJotformAnswer(field, a) {
   const v = a?.answer;
   if (v == null || v === "") return undefined;
   switch (field.type) {
-    case "fullname": return typeof v === "object" ? { first: String(v.first || ""), last: String(v.last || "") } : undefined;
+    case "fullname": return typeof v === "object" ? { first: String(v.first || ""), ...(v.middle ? { middle: String(v.middle) } : {}), last: String(v.last || "") } : undefined;
     case "address": return typeof v === "object" ? { addr_line1: v.addr_line1 || "", addr_line2: v.addr_line2 || "", city: v.city || "", state: v.state || "", postal: v.postal || "", country: v.country || "" } : undefined;
     case "date": {
       if (typeof v === "object" && v.year) return `${v.year}-${String(v.month).padStart(2, "0")}-${String(v.day).padStart(2, "0")}`;

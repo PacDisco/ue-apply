@@ -29,7 +29,7 @@ const PARENT_LABEL = process.env.UE_PARENT_LABEL || "Parent";
 export const TEACHER_LABEL = process.env.UE_TEACHER_LABEL || "Teacher";
 export const TRIP_LEADER_LABEL = process.env.UE_TRIP_LEADER_LABEL || "Trip Leader";
 
-const nameOf = (v) => (v && typeof v === "object" ? { first: String(v.first || "").trim(), last: String(v.last || "").trim() } : splitName(v));
+const nameOf = (v) => (v && typeof v === "object" ? { first: String(v.first || "").trim(), middle: String(v.middle || "").trim(), last: String(v.last || "").trim() } : splitName(v));
 export function splitName(s) {
   const parts = String(s || "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return { first: "", last: "" };
@@ -40,7 +40,7 @@ export function splitName(s) {
 /** The deal name, same pattern as the deals created by hand: "Ruby Isla Thornburgh — Nepal 2028". */
 export function dealName(app, trip) {
   const n = nameOf(app.answers?.name);
-  const who = [n.first, n.last].filter(Boolean).join(" ") || [app.first_name, app.last_name].filter(Boolean).join(" ") || app.email;
+  const who = [n.first, n.middle, n.last].filter(Boolean).join(" ") || [app.first_name, app.last_name].filter(Boolean).join(" ") || app.email;
   return `${who} — ${trip?.destination || app.program_name || "Unearthed"}`;
 }
 
@@ -53,7 +53,7 @@ export function mappedContactProps(schema, answers) {
     const v = answers?.[field.key];
     if (v == null || K.isEmptyValue(field, v)) continue;
     if (typeof m === "object") {
-      if (field.type === "fullname") { if (m.first) out[m.first] = v.first; if (m.last) out[m.last] = v.last; }
+      if (field.type === "fullname") { if (m.first) out[m.first] = v.first; if (m.middle && v.middle) out[m.middle] = v.middle; if (m.last) out[m.last] = v.last; }
       continue;
     }
     out[m] = field.type === "date" ? String(v) : K.valueText(field, v);

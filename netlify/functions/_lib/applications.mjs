@@ -36,7 +36,7 @@ import { waiverPdf } from "./pdf.mjs";
 const today = () => new Date().toISOString().slice(0, 10);
 const studentName = (app) => {
   const n = app.answers?.name;
-  return (n && typeof n === "object" ? [n.first, n.last] : [app.first_name, app.last_name]).filter(Boolean).join(" ").trim() || app.email;
+  return (n && typeof n === "object" ? [n.first, n.middle, n.last] : [app.first_name, app.last_name]).filter(Boolean).join(" ").trim() || app.email;
 };
 const firstName = (app) => (app.answers?.name?.first || app.first_name || "").trim();
 export const isTeacher = (app) => app?.kind === "teacher";
