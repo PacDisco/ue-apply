@@ -15,7 +15,8 @@ export function pdfText(s) {
  * @param {{ waiver, under18, student: { name, dob }, trip: { name }, signed: { parentName, relationship, initials, signature, signedAt, ip } }} o
  * @returns Uint8Array
  */
-export function waiverPdf({ waiver, under18, student, trip, signed }) {
+export function waiverPdf({ waiver, under18, student, trip, signed, role = "Student" }) {
+  const self = signed?.relationship === "Self";
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
@@ -32,7 +33,7 @@ export function waiverPdf({ waiver, under18, student, trip, signed }) {
   };
 
   write(waiver.title || "Permissions packet", { size: 16, bold: true, gap: 4 });
-  write(`Student: ${student.name}${student.dob ? `  (date of birth ${student.dob})` : ""}`, { size: 10, gap: 2 });
+  write(`${role}: ${student.name}${student.dob ? `  (date of birth ${student.dob})` : ""}`, { size: 10, gap: 2 });
   write(`Program: ${trip.name || ""}`, { size: 10, gap: 12 });
   for (const b of htmlBlocks(waiver.intro || "")) write(b.kind === "li" ? `• ${b.text}` : b.text, { bold: b.kind === "h", indent: b.kind === "li" ? 12 * b.depth : 0 });
 
@@ -40,12 +41,12 @@ export function waiverPdf({ waiver, under18, student, trip, signed }) {
     y += 6;
     write(part.title, { size: 12, bold: true });
     for (const b of htmlBlocks(part.html)) write(b.kind === "li" ? `• ${b.text}` : b.text, { bold: b.kind === "h", indent: b.kind === "li" ? 12 * b.depth : 0, gap: 4 });
-    write(`Initialled by the parent/guardian: ${signed.initials?.[part.key] || "-"}`, { bold: true, gap: 10 });
+    write(`Initialled by ${self ? "the signer" : "the parent/guardian"}: ${signed.initials?.[part.key] || "-"}`, { bold: true, gap: 10 });
   }
 
   y += 8;
   write(waiver.declaration || "", { bold: true, gap: 10 });
-  write(`Signed by: ${signed.parentName} (${signed.relationship})`, { gap: 2 });
+  write(`Signed by: ${signed.parentName} (${self ? "signed for themselves" : signed.relationship})`, { gap: 2 });
   write(`Date: ${new Date(signed.signedAt).toLocaleString("en-NZ", { timeZone: "Pacific/Auckland", dateStyle: "long", timeStyle: "short" })} (NZ time)`, { gap: 2 });
   if (signed.ip) write(`Signed online at apply.unearthededucation.org from IP ${signed.ip}`, { size: 8, color: 110, gap: 8 });
   need(110);

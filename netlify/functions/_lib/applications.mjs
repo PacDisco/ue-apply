@@ -16,10 +16,15 @@
 // Statuses: started → applied → signed → paid. A trip whose school collects
 // payments skips step 4. The applicant's browser holds a random token; only
 // its sha256 is stored.
+//
+// Teachers (kind "teacher", link /<trip>/teacher, their own form): about you →
+// application → they sign the waiver themselves → done. No parents, no
+// deposit, no deal. Staff approve them on the dashboard, which is what gives
+// them the "Teacher" label on the trip (and so the leader portal).
 
 import * as K from "../../../public/form-kit.mjs";
 import * as W from "../../../public/waiver-kit.mjs";
-import { q, publishedSchema, appByToken, appById, noteSync } from "./db.mjs";
+import { q, publishedSchema, appByToken, appById, noteSync, kindOf } from "./db.mjs";
 import { newToken, hashToken, siteUrl, bad } from "./http.mjs";
 import { tripBySlug, publicTrip } from "./trips.mjs";
 import * as Sync from "./sync.mjs";
@@ -34,15 +39,21 @@ const studentName = (app) => {
   return (n && typeof n === "object" ? [n.first, n.last] : [app.first_name, app.last_name]).filter(Boolean).join(" ").trim() || app.email;
 };
 const firstName = (app) => (app.answers?.name?.first || app.first_name || "").trim();
-export const isUnder18 = (app) => { const a = K.ageOn(app.answers?.dob, today()); return a == null ? true : a < 18; };
+export const isTeacher = (app) => app?.kind === "teacher";
+/** Teacher-form roles, by link: /<trip>/teacher and /<trip>/leader. */
+export const roleOf = (r) => (/leader/i.test(String(r || "")) ? "Trip Leader" : "Teacher");
+const rolePath = (app) => (roleOf(app?.role) === "Trip Leader" ? "/leader" : "/teacher");
+export const isUnder18 = (app) => { if (isTeacher(app)) return false; const a = K.ageOn(app.answers?.dob, today()); return a == null ? true : a < 18; };
+const schemaOf = (app) => publishedSchema({ kind: app?.kind });
 const money = (n, cur) => `${cur || ""} ${Number(n).toLocaleString("en-NZ", { minimumFractionDigits: Number(n) % 1 ? 2 : 0, maximumFractionDigits: 2 })}`.trim();
-const resumeLink = (slug, token) => `${siteUrl()}/${slug}?t=${encodeURIComponent(token)}`;
+const resumeLink = (slug, token, app) => `${siteUrl()}/${slug}${isTeacher(app) ? rolePath(app) : ""}?t=${encodeURIComponent(token)}`;
 
 /** Where the applicant is up to. */
 export function nextStep(app, trip) {
   if (!app.step1_at) return "about";
   if (!app.step2_at) return "application";
   const w = app.waiver?.status;
+  if (isTeacher(app)) return w === "signed" ? "done" : "waiver";
   if (w === "sent") return "waiting"; // emailed to a parent, not signed yet
   if (w !== "signed") return "waiver";
   if (trip?.schoolCollecting) return "done";
@@ -53,6 +64,8 @@ export function nextStep(app, trip) {
 /** What the browser gets back: never the waiver signature or other people's data. */
 export function stateOf(app, trip) {
   return {
+    kind: kindOf(app.kind),
+    ...(isTeacher(app) ? { role: roleOf(app.role) } : {}),
     status: app.status,
     step: nextStep(app, trip),
     answers: app.answers || {},
@@ -79,10 +92,11 @@ async function byToken(token) {
 // ── public reads ────────────────────────────────────────────────────────────
 
 /** Trip + the published form for a launch link. */
-export async function launch(slug) {
+export async function launch(slug, kind = "student") {
   const trip = await loadTrip(slug);
-  const { schema, rev } = await publishedSchema();
-  return { trip: publicTrip(trip), form: publicForm(schema), rev, prefill: K.prefillValues(schema, { trip }) };
+  const k = kindOf(kind);
+  const { schema, rev } = await publishedSchema({ kind: k });
+  return { kind: k, trip: publicTrip(trip), form: publicForm(schema), rev, prefill: K.prefillValues(schema, { trip }) };
 }
 
 /** The schema minus anything the public doesn't need (Jotform/HubSpot mappings stay, they're harmless). */
@@ -99,22 +113,23 @@ export function publicForm(schema) {
 export async function resume(token) {
   const app = await byToken(token);
   const trip = await loadTrip(app.trip_slug);
-  const { schema } = await publishedSchema();
-  return { trip: publicTrip(trip), form: publicForm(schema), app: stateOf(app, trip) };
+  const { schema } = await schemaOf(app);
+  return { kind: kindOf(app.kind), trip: publicTrip(trip), form: publicForm(schema), app: stateOf(app, trip) };
 }
 
 // ── 1. about you ────────────────────────────────────────────────────────────
 
-export async function start({ slug, values, attribution }) {
+export async function start({ slug, kind = "student", role = null, values, attribution }) {
   const trip = await loadTrip(slug, { requireOpen: true });
-  const { schema, rev } = await publishedSchema();
+  const k = kindOf(kind);
+  const { schema, rev } = await publishedSchema({ kind: k });
   const v = K.validateStep(schema, "step1", { ...K.prefillValues(schema, { trip }), ...(values || {}) });
   if (!v.ok) throw Object.assign(bad("Please check the highlighted fields."), { fields: v.errors });
   const email = String(v.clean.email || "").toLowerCase();
 
   // Already applied for this trip? Never hand their answers to whoever typed
   // the email — send the continue link to the inbox instead.
-  const [existing] = await q(`SELECT * FROM ue_applications WHERE lower(email) = $1 AND trip_slug = $2 AND status <> 'withdrawn' ORDER BY created_at DESC LIMIT 1`, [email, trip.slug]);
+  const [existing] = await q(`SELECT * FROM ue_applications WHERE lower(email) = $1 AND trip_slug = $2 AND kind = $3 AND status <> 'withdrawn' ORDER BY created_at DESC LIMIT 1`, [email, trip.slug, k]);
   if (existing) {
     await emailResume(existing, trip, schema);
     return { emailed: true };
@@ -123,9 +138,9 @@ export async function start({ slug, values, attribution }) {
   const token = newToken();
   const name = v.clean.name || {};
   const [app] = await q(
-    `INSERT INTO ue_applications (token_hash, email, first_name, last_name, trip_slug, program_id, program_name, status, answers, form_rev, step1_at, attribution)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'started',$8,$9,now(),$10) RETURNING *`,
-    [hashToken(token), email, name.first || null, name.last || null, trip.slug, trip.programId, trip.name, JSON.stringify(v.clean), rev, JSON.stringify(cleanAttribution(attribution))]);
+    `INSERT INTO ue_applications (token_hash, email, first_name, last_name, trip_slug, program_id, program_name, status, answers, form_rev, step1_at, attribution, kind, role)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'started',$8,$9,now(),$10,$11,$12) RETURNING *`,
+    [hashToken(token), email, name.first || null, name.last || null, trip.slug, trip.programId, trip.name, JSON.stringify(v.clean), rev, JSON.stringify(cleanAttribution(attribution)), k, k === "teacher" ? roleOf(role) : null]);
   await Sync.syncContact(app, schema).catch(() => {});
   return { token, app: stateOf(app, trip) };
 }
@@ -141,17 +156,18 @@ function cleanAttribution(a) {
 async function emailResume(app, trip, schema) {
   const token = newToken();
   await q(`UPDATE ue_applications SET token_hash = $2, updated_at = now() WHERE id = $1`, [app.id, hashToken(token)]);
-  await N.sendKind("resume", { to: [app.email], schema, vars: { student: studentName(app), studentFirst: firstName(app) || "there", trip: trip.name, school: trip.school, link: resumeLink(trip.slug, token) } })
+  await N.sendKind("resume", { to: [app.email], schema, vars: { student: studentName(app), studentFirst: firstName(app) || "there", trip: trip.name, school: trip.school, link: resumeLink(trip.slug, token, app) } })
     .catch((e) => console.warn("[ue-apply] resume email", e.message));
 }
 
 /** "Lost your link?" — always the same answer, whether or not we found them. */
-export async function requestResume({ slug, email }) {
+export async function requestResume({ slug, email, kind = "student" }) {
   const trip = await loadTrip(slug);
-  const { schema } = await publishedSchema();
+  const k = kindOf(kind);
+  const { schema } = await publishedSchema({ kind: k });
   const e = String(email || "").trim().toLowerCase();
   if (e.includes("@")) {
-    const [app] = await q(`SELECT * FROM ue_applications WHERE lower(email) = $1 AND trip_slug = $2 AND status NOT IN ('withdrawn','imported') ORDER BY created_at DESC LIMIT 1`, [e, trip.slug]);
+    const [app] = await q(`SELECT * FROM ue_applications WHERE lower(email) = $1 AND trip_slug = $2 AND kind = $3 AND status NOT IN ('withdrawn','imported') ORDER BY created_at DESC LIMIT 1`, [e, trip.slug, k]);
     if (app) await emailResume(app, trip, schema);
   }
   return { ok: true };
@@ -163,7 +179,7 @@ export async function requestResume({ slug, email }) {
 export async function saveDraft({ token, values }) {
   const app = await byToken(token);
   if (app.step2_at) return { ok: true }; // submitted answers are only changed by submit
-  const { schema } = await publishedSchema();
+  const { schema } = await schemaOf(app);
   const keep = {};
   for (const f of K.stepFields(schema, "step2")) if (K.isInput(f) && values?.[f.key] !== undefined) keep[f.key] = values[f.key];
   const text = JSON.stringify(keep);
@@ -175,7 +191,7 @@ export async function saveDraft({ token, values }) {
 export async function submit({ token, values }) {
   const app = await byToken(token);
   const trip = await loadTrip(app.trip_slug);
-  const { schema, rev } = await publishedSchema();
+  const { schema, rev } = await schemaOf(app);
   const all = { ...(app.answers || {}), ...(values || {}) };
   const v = K.validateStep(schema, "step2", all);
   if (!v.ok) throw Object.assign(bad("Please check the highlighted fields."), { fields: v.errors });
@@ -195,10 +211,13 @@ export async function submit({ token, values }) {
       WHERE id = $1 RETURNING *`, [app.id, JSON.stringify(answers), rev]);
   const sync = await Sync.syncApplication(row, { schema, trip });
   if (first) {
-    N.alertStaff(`New Unearthed application — ${studentName(row)} (${trip.name})`, [
-      `${studentName(row)} <${row.email}> applied for ${trip.name}.`,
+    const teacher = isTeacher(row);
+    const role = roleOf(row.role);
+    N.alertStaff(`New Unearthed ${teacher ? `${role.toLowerCase()} ` : ""}application — ${studentName(row)} (${trip.name})`, [
+      `${studentName(row)} <${row.email}> applied${teacher ? ` as a ${role.toLowerCase()}` : ""} for ${trip.name}.`,
+      ...(teacher ? [`They don't get leader-portal access until you approve them on the dashboard (Applications → Approve as ${role}).`] : []),
       `Dashboard: ${process.env.DASHBOARD_URL || "https://dashboard.pacificdiscovery.org"}/ue-apply-form/#app=${row.id}`,
-      row.hubspot_deal_id ? `HubSpot deal: https://app.hubspot.com/contacts/${process.env.HUBSPOT_PORTAL_ID || "3855728"}/record/0-3/${row.hubspot_deal_id}` : "HubSpot deal: not created — check the sync on the dashboard",
+      teacher ? `HubSpot contact: ${row.hubspot_contact_id ? `https://app.hubspot.com/contacts/${process.env.HUBSPOT_PORTAL_ID || "3855728"}/record/0-1/${row.hubspot_contact_id}` : "not created — check the sync on the dashboard"}` : row.hubspot_deal_id ? `HubSpot deal: https://app.hubspot.com/contacts/${process.env.HUBSPOT_PORTAL_ID || "3855728"}/record/0-3/${row.hubspot_deal_id}` : "HubSpot deal: not created — check the sync on the dashboard",
     ]).catch(() => {});
   }
   return { app: stateOf(row, trip), sync: Object.fromEntries(Object.entries(sync).map(([k, r]) => [k, !!r?.ok])) };
@@ -217,7 +236,7 @@ export async function recordUpload({ token, fieldKey, name, type, size, blobKey 
 
 export async function uploadAllowed(token, fieldKey) {
   const app = await byToken(token);
-  const { schema } = await publishedSchema();
+  const { schema } = await schemaOf(app);
   const f = K.fieldByKey(schema, fieldKey);
   if (!f || f.type !== "file") throw bad("That isn't an upload field.");
   const [{ n }] = await q(`SELECT count(*)::int AS n FROM ue_apply_files WHERE app_id = $1`, [app.id]);
@@ -230,10 +249,11 @@ export async function uploadAllowed(token, fieldKey) {
 /** Email a parent the signing link (the student can carry on to the deposit). */
 export async function sendForSignature({ token, email }) {
   const app = await byToken(token);
+  if (isTeacher(app)) throw bad("Teachers sign the waiver themselves — there's nothing to send.");
   if (!app.step2_at) throw bad("Please finish the application first.");
   if (app.waiver?.status === "signed") return { app: stateOf(app, await loadTrip(app.trip_slug)) };
   const trip = await loadTrip(app.trip_slug);
-  const { schema } = await publishedSchema();
+  const { schema } = await schemaOf(app);
   const to = String(email || app.answers?.parent1Email || "").trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(to)) throw Object.assign(bad("Please enter your parent or guardian's email."), { fields: { email: "Please enter a valid email address." } });
   if (to === String(app.email).toLowerCase()) throw Object.assign(bad("This needs to go to a parent or guardian, not the student."), { fields: { email: "Use your parent or guardian's email, not yours." } });
@@ -250,7 +270,7 @@ export async function sendForSignature({ token, email }) {
 export async function signInfo(signToken) {
   const app = await appBySignToken(signToken);
   const trip = await loadTrip(app.trip_slug);
-  const { schema } = await publishedSchema();
+  const { schema } = await schemaOf(app);
   return {
     student: studentName(app), trip: publicTrip(trip), waiver: W.waiverOf(schema), under18: isUnder18(app),
     signed: app.waiver?.status === "signed" ? { parentName: app.waiver.parentName, signedAt: app.waiver.signedAt } : null,
@@ -273,12 +293,13 @@ async function appBySignToken(signToken) {
 export async function sign({ token, signToken, input, ip, userAgent }) {
   const app = signToken ? await appBySignToken(signToken) : await byToken(token);
   if (!app.step2_at) throw bad("Please finish the application first.");
+  if (signToken && isTeacher(app)) throw bad("This signing link isn't valid.", 401);
   const trip = await loadTrip(app.trip_slug);
-  const { schema } = await publishedSchema();
+  const { schema } = await schemaOf(app);
   if (app.waiver?.status === "signed") return { app: stateOf(app, trip), already: true };
   const waiver = W.waiverOf(schema);
   const under18 = isUnder18(app);
-  const v = W.validateSignature(waiver, input, { under18 });
+  const v = W.validateSignature(waiver, input, { under18, self: isTeacher(app) });
   if (!v.ok) throw Object.assign(bad("Please complete the highlighted parts."), { fields: v.errors });
   const signedAt = new Date().toISOString();
   const record = {
@@ -303,23 +324,23 @@ export async function sign({ token, signToken, input, ip, userAgent }) {
 export async function afterSigned(app, { schema, trip, waiver, under18 }) {
   let bytes = null;
   try {
-    bytes = waiverPdf({ waiver: app.waiver?.text?.parts ? app.waiver.text : waiver, under18, student: { name: studentName(app), dob: app.answers?.dob }, trip, signed: { ...app.waiver, signature: app.waiver_signature } });
+    bytes = waiverPdf({ waiver: app.waiver?.text?.parts ? app.waiver.text : waiver, under18, student: { name: studentName(app), dob: app.answers?.dob }, trip, signed: { ...app.waiver, signature: app.waiver_signature }, role: isTeacher(app) ? "Teacher" : "Student" });
   } catch (e) { await noteSync(app.id, "waiverPdf", { ok: false, error: e.message }); }
-  const fileName = `Permissions packet - ${studentName(app)} - ${trip.destination || trip.name}.pdf`.replace(/[\\/:*?"<>|]/g, "-");
+  const fileName = `${isTeacher(app) ? "Teacher waiver" : "Permissions packet"} - ${studentName(app)} - ${trip.destination || trip.name}.pdf`.replace(/[\\/:*?"<>|]/g, "-");
   if (bytes && app.hubspot_contact_id) {
     try {
       const fileId = await HS.uploadFile(bytes, fileName);
       const noteId = await HS.createNote({
-        body: `<p><strong>Permissions packet signed</strong> — ${trip.name}<br>Signed by ${app.waiver.parentName} (${app.waiver.relationship}) on ${new Date(app.waiver.signedAt).toLocaleDateString("en-NZ")} via apply.unearthededucation.org. PDF attached.</p>`,
+        body: `<p><strong>${isTeacher(app) ? "Teacher waiver signed" : "Permissions packet signed"}</strong> — ${trip.name}<br>Signed by ${app.waiver.parentName} (${isTeacher(app) ? "the teacher, for themselves" : app.waiver.relationship}) on ${new Date(app.waiver.signedAt).toLocaleDateString("en-NZ")} via apply.unearthededucation.org. PDF attached.</p>`,
         fileId, contactIds: [app.hubspot_contact_id, ...(app.hubspot_parent_ids || [])], dealId: app.hubspot_deal_id,
       });
       await noteSync(app.id, "waiverPdf", { ok: true, fileId, noteId });
     } catch (e) { await noteSync(app.id, "waiverPdf", { ok: false, error: e.message }); }
   }
-  await Sync.syncApplication(app, { schema, trip, only: ["jotform"], waiverSigned: true }).catch(() => {});
-  const to = app.waiver.sentTo || String(app.answers?.parent1Email || "").toLowerCase() || null;
+  if (!isTeacher(app)) await Sync.syncApplication(app, { schema, trip, only: ["jotform"], waiverSigned: true }).catch(() => {});
+  const to = isTeacher(app) ? String(app.email).toLowerCase() : app.waiver.sentTo || String(app.answers?.parent1Email || "").toLowerCase() || null;
   if (to && bytes) {
-    N.sendKind("signed", { to: [to], cc: [app.email], schema, vars: { parent: app.waiver.parentName.split(/\s+/)[0], student: studentName(app), studentFirst: firstName(app), trip: trip.name }, attachments: [{ filename: fileName, content: Buffer.from(bytes) }] })
+    N.sendKind("signed", { to: [to], cc: to === String(app.email).toLowerCase() ? [] : [app.email], schema, vars: { parent: app.waiver.parentName.split(/\s+/)[0], student: studentName(app), studentFirst: firstName(app), trip: trip.name }, attachments: [{ filename: fileName, content: Buffer.from(bytes) }] })
       .catch((e) => console.warn("[ue-apply] signed email", e.message));
   }
 }
@@ -344,7 +365,7 @@ export async function checkout({ token, signToken, method }) {
   if (step === "waiting" || step === "waiver") throw bad("A parent or guardian needs to sign the permissions packet before the deposit can be paid.", 409);
   if (step !== "deposit") throw bad("Please finish the earlier steps first.");
   if (!trip.open && app.deposit?.status !== "processing") throw bad("Applications for this trip are closed.", 409);
-  const { schema } = await publishedSchema();
+  const { schema } = await schemaOf(app);
   const m = method === "bank" ? "bank" : "card";
   const charge = depositQuote(schema, trip, m);
   if (!app.hubspot_deal_id) await Sync.syncApplication(app, { schema, trip, only: ["contact", "deal"] }).catch(() => {});
@@ -405,7 +426,7 @@ export async function applySession(session, { failed = false } = {}) {
 
 async function afterPaid(app) {
   const trip = await tripBySlug(app.trip_slug, { fresh: true });
-  const { schema } = await publishedSchema();
+  const { schema } = await schemaOf(app);
   const parents = [app.answers?.parent1Email, app.answers?.parent2Email].map((e) => String(e || "").toLowerCase()).filter((e) => e.includes("@"));
   const amount = money(app.deposit?.amount, app.deposit?.currency);
   await N.sendKind("deposit", { to: [app.email], cc: parents, schema, vars: { student: studentName(app), studentFirst: firstName(app) || "there", trip: trip?.name || app.program_name, amount, link: process.env.UE_PORTAL_URL || "https://portal.unearthededucation.org" } })

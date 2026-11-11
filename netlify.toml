@@ -41,6 +41,18 @@
   to = "/sign.html"
   status = 200
 
+# Teacher and trip-leader links (/<trip-slug>/teacher, /<trip-slug>/leader) are
+# the same page too — the same teacher form; app.js reads which.
+[[redirects]]
+  from = "/:slug/teacher"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/:slug/leader"
+  to = "/index.html"
+  status = 200
+
 # Every launch link (/<trip-slug>) is the same page; app.js reads the slug.
 [[redirects]]
   from = "/:slug"

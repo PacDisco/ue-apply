@@ -9,6 +9,7 @@
 // this site's JOTFORM_API_KEY or APPLY_SERVICE_KEY — the same key the portals
 // already send to Jotform.
 import * as G from "./_lib/jf-gateway.mjs";
+import * as K from "../../public/form-kit.mjs";
 import { q, publishedSchema, noteSync } from "./_lib/db.mjs";
 import { fileUrl, flag, safeEqual } from "./_lib/http.mjs";
 
@@ -29,14 +30,16 @@ function jfError(message, status) {
   });
 }
 function jfJson(body) {
+  return sendBytes(new TextEncoder().encode(JSON.stringify(body)), 200, "application/json");
+}
+function sendBytes(bytes, status, type) {
   // Streamed, so a big page (1000 submissions) isn't held to the buffered-response size limit.
-  const bytes = new TextEncoder().encode(JSON.stringify(body));
   const CHUNK = 256 * 1024;
   let i = 0;
   const stream = new ReadableStream({
     pull(c) { if (i >= bytes.length) { c.close(); return; } c.enqueue(bytes.subarray(i, i + CHUNK)); i += CHUNK; },
   });
-  return new Response(stream, { status: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
+  return new Response(stream, { status, headers: { "Content-Type": type, "Cache-Control": "no-store" } });
 }
 
 export function authorised(req) {
@@ -59,7 +62,11 @@ async function proxy(req, path, url) {
     init.headers["Content-Type"] = req.headers.get("content-type") || "application/x-www-form-urlencoded";
   }
   const res = await fetch(`${base}${path}?${qs}`, init);
-  return new Response(res.body, { status: res.status, headers: { "Content-Type": res.headers.get?.("content-type") || "application/json", "Cache-Control": "no-store" } });
+  // Read it all, then send — handing Jotform's (compressed, chunked) stream
+  // straight back isn't reliable through Netlify.
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  console.log(`[jotform-api] ${req.method} ${path} → Jotform ${res.status}, ${bytes.length} bytes`);
+  return sendBytes(bytes, res.status, res.headers.get?.("content-type") || "application/json");
 }
 
 async function upstreamJson(path, url) {
@@ -84,13 +91,25 @@ async function servedApps(where = "", params = []) {
 
 function shape(app, schema) {
   const tripRow = app.t_slug ? { slug: app.t_slug, program_id: app.t_program_id, program_name: app.t_program_name, school: app.t_school, destination: app.t_destination, currency: app.t_currency, open: app.t_open } : null;
-  return { app, sub: G.toSubmission(app, schema, { tripRow, fileUrl }) };
+  const formId = app.kind === "teacher" ? K.TEACHER_FORM_ID : G.appFormId(schema);
+  return { app, sub: G.toSubmission(app, schema, { tripRow, fileUrl, formId }) };
 }
+
+/** The published form that goes with an application (student or teacher). */
+const schemaFor = async (app) => (await publishedSchema({ kind: app?.kind })).schema;
 
 async function findServed(id) {
   if (!/^\d{1,25}$/.test(String(id))) return null;
   const [app] = await servedApps(`AND (a.submission_id = $1 OR a.jotform_submission_id = $1)`, [String(id)]);
   return app || null;
+}
+
+/** Teacher applications: only ever from here (they have no Jotform form). */
+async function listTeachers(url) {
+  const { schema } = await publishedSchema({ kind: "teacher" });
+  const ours = (await servedApps(`AND a.kind = 'teacher'`)).map((a) => shape(a, schema));
+  const own = G.ownPage(ours, { offset: Number(url.searchParams.get("offset")) || 0, limit: Number(url.searchParams.get("limit")) || 20 });
+  return jfJson(G.envelope(own.content, { resultSet: own.resultSet }));
 }
 
 /**
@@ -101,7 +120,7 @@ async function findServed(id) {
 async function oursSafely() {
   try {
     const { schema } = await publishedSchema();
-    return { schema, ours: (await servedApps()).map((a) => shape(a, schema)) };
+    return { schema, ours: (await servedApps(`AND a.kind = 'student'`)).map((a) => shape(a, schema)) };
   } catch (err) {
     console.error("[jotform-api] serving Jotform only:", err?.message || err);
     return { schema: null, ours: [], error: err };
@@ -114,6 +133,7 @@ async function appFormIdSafely() {
 }
 
 async function listSubmissions(formId, url) {
+  if (String(formId) === K.TEACHER_FORM_ID) return listTeachers(url);
   if (String(formId) !== await appFormIdSafely()) return null; // not ours → Jotform as-is
   const offset = Number(url.searchParams.get("offset")) || 0;
   const limit = Number(url.searchParams.get("limit")) || 20;
@@ -125,6 +145,7 @@ async function listSubmissions(formId, url) {
   }
   const [data, { ours }] = await Promise.all([upstreamJson(`/form/${encodeURIComponent(formId)}/submissions`, url), oursSafely()]);
   const content = G.mergePage(data.content, ours, { offset });
+  console.log(`[jotform-api] list ${formId} offset ${offset}: ${Array.isArray(data.content) ? data.content.length : 0} from Jotform, ${ours.length} here`);
   return jfJson({ ...data, content, resultSet: { ...(data.resultSet || {}), count: content.length } });
 }
 
@@ -132,7 +153,7 @@ async function getSubmission(id) {
   let app = null; let schema = null;
   try {
     app = await findServed(id);
-    if (app) schema = (await publishedSchema()).schema;
+    if (app) schema = await schemaFor(app);
   } catch (err) {
     console.error("[jotform-api] submission from Jotform:", err?.message || err);
     return null; // → Jotform
@@ -145,7 +166,7 @@ async function editSubmission(req, id) {
   let app = null;
   try { app = await findServed(id); } catch (err) { console.error("[jotform-api] edit to Jotform:", err?.message || err); return null; }
   if (!app) return null;
-  const { schema } = await publishedSchema();
+  const schema = await schemaFor(app);
   const raw = await req.text();
   const pairs = [...new URLSearchParams(raw).entries()];
   const r = G.applyEdit(schema, app.answers, pairs);

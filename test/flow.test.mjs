@@ -17,6 +17,7 @@ const pool = new pg.Pool({ connectionString: process.env.TEST_PG_URL || 'postgre
 try { await pool.query('select 1'); } catch { console.log('  – flow tests skipped (no Postgres)'); process.exit(0); }
 await pool.query(readFileSync(new URL('./MIGRATION-ue-apply.sql', import.meta.url), 'utf8'));
 await pool.query(readFileSync(new URL('./MIGRATION-ue-apply-submission-ids.sql', import.meta.url), 'utf8'));
+await pool.query(readFileSync(new URL('./MIGRATION-ue-apply-teachers.sql', import.meta.url), 'utf8'));
 await pool.query('TRUNCATE ue_apply_files, ue_applications, ue_apply_trips, ue_apply_form_versions, ue_apply_forms CASCADE');
 const sql = { query: async (text, p = []) => (await pool.query(text, p)).rows };
 
@@ -32,8 +33,8 @@ const programs = {
   '57951798456': { unearthed_program: 'Otago Boys High School - Borneo 2027', program_currency: 'NZD', payment_amount_2: '1375', payment_amount_3: '1375' },
   '50506535214': { unearthed_program: 'Global Portal Information', payment_amount_1: '1750' },
 };
-const LABELS = { 'contacts|contacts': [{ category: 'USER_DEFINED', typeId: 1, label: 'Parent' }], 'contacts|2-58156993': [{ category: 'USER_DEFINED', typeId: 7, label: 'Student' }, { category: 'USER_DEFINED', typeId: 8, label: 'Parent' }], 'deals|2-58156993': [] };
-const res = (body, status = 200) => ({ ok: status < 300, status, json: async () => body, text: async () => JSON.stringify(body), headers: new Map() });
+const LABELS = { 'contacts|contacts': [{ category: 'USER_DEFINED', typeId: 1, label: 'Parent' }], 'contacts|2-58156993': [{ category: 'USER_DEFINED', typeId: 7, label: 'Student' }, { category: 'USER_DEFINED', typeId: 8, label: 'Parent' }, { category: 'USER_DEFINED', typeId: 9, label: 'Teacher' }, { category: 'USER_DEFINED', typeId: 10, label: 'Trip Leader' }], 'deals|2-58156993': [] };
+const res = (body, status = 200) => ({ ok: status < 300, status, json: async () => body, text: async () => JSON.stringify(body), arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(body)).buffer, headers: new Map() });
 const hubspot = async (url, opts = {}) => {
   const u = new URL(url); const p = u.pathname; const m = opts.method || 'GET';
   const body = opts.body && typeof opts.body === 'string' ? JSON.parse(opts.body) : null;
@@ -329,6 +330,91 @@ await t('portal data source (/api/jotform): ours from the database, the rest fro
   assert.equal(h.formPublished, false); assert.equal(h.apiKeyAccepted, true); assert.equal(h.migrationRun, true); assert.equal(h.database, true);
   assert.equal((await (await api(new Request('https://apply.test/api/jotform/health?apiKey=wrong'))).json()).apiKeyAccepted, false);
   await pool.query(`UPDATE ue_apply_forms SET published = draft`); db.__clearSchemaCache();
+});
+
+await t('teacher form: /<trip>/teacher — own form, signs own waiver, no deposit/deal/Jotform, approval adds the Teacher label', async () => {
+  const K = await import('../public/form-kit.mjs');
+  const { schema: tschema } = K.teacherSchemaFrom(schema);
+  // Not published yet → a clear message, and the student form is unaffected.
+  assert.equal((await call(null, '?trip=otago-borneo-2027&kind=teacher')).status, 503);
+  await pool.query(`INSERT INTO ue_apply_forms (id, draft, draft_rev, published, published_rev) VALUES ('ue-teacher-application', $1, 1, $1, 1)`, [JSON.stringify(tschema)]);
+  db.__clearSchemaCache();
+  const launch = await call(null, '?trip=otago-borneo-2027&kind=teacher');
+  assert.equal(launch.status, 200); assert.equal(launch.body.kind, 'teacher');
+  assert.ok(!JSON.stringify(launch.body.form).includes('parent1Email'));
+
+  // Same email as a student application on this trip is fine — different form.
+  const st = await call({ action: 'start', trip: 'otago-borneo-2027', kind: 'teacher', values: { name: { first: 'Tina', last: 'Teacher' }, email: 'ana@rua.nz', dob: '1985-04-05' } });
+  assert.equal(st.status, 200, JSON.stringify(st.body)); assert.equal(st.body.app.kind, 'teacher');
+  await pool.query(`DELETE FROM ue_applications WHERE kind = 'teacher'`);
+  const before = { deals: H.deals.size, jot: J.subs.size, assoc: H.assoc.length };
+  const s1 = await call({ action: 'start', trip: 'otago-borneo-2027', kind: 'teacher', values: { name: { first: 'Tina', last: 'Teacher' }, email: 'tina@school.nz', dob: '1985-04-05' } });
+  const ttoken = s1.body.token;
+  // Starting again → emailed link (teacher path).
+  const again = await call({ action: 'start', trip: 'otago-borneo-2027', kind: 'teacher', values: { name: { first: 'Tina', last: 'Teacher' }, email: 'tina@school.nz', dob: '1985-04-05' } });
+  assert.equal(again.body.emailed, true); assert.match(mails.at(-1).text, /\/otago-borneo-2027\/teacher\?t=/);
+  const ttoken2 = new URL(mails.at(-1).text.match(/https:\S+/)[0]).searchParams.get('t');
+
+  const values = { school: 'Otago Boys High School', tshirt: 'M', asthma: 'No', holdPassport: 'No',
+    emergencyName: { first: 'Tom', last: 'Teacher' }, emergencyRelationship: 'Partner', emergencyPhone: { cc: '64', number: '21 999 0000' }, emergencyEmail: 'tina@school.nz' };
+  const dupe = await call({ action: 'submit', token: ttoken2, values });
+  assert.equal(dupe.status, 400); assert.match(dupe.body.fields.emergencyEmail, /your own email/);
+  values.emergencyEmail = 'tom@home.nz';
+  const sub = await call({ action: 'submit', token: ttoken2, values });
+  assert.equal(sub.status, 200, JSON.stringify(sub.body)); assert.equal(sub.body.app.step, 'waiver');
+  assert.equal(H.deals.size, before.deals, 'no deal'); assert.equal(J.subs.size, before.jot, 'nothing in Jotform');
+  assert.ok(!H.assoc.slice(before.assoc).some((a) => a.to.startsWith('2-58156993:')), 'not on the trip until approved');
+  assert.ok([...H.contacts.values()].some((c) => c.properties.email === 'tina@school.nz'));
+  assert.ok(![...H.contacts.values()].some((c) => c.properties.email === 'tom@home.nz'), 'emergency contact is not a HubSpot contact');
+  assert.match(mails.at(-1).subject, /teacher application/);
+
+  assert.equal((await call({ action: 'send-waiver', token: ttoken2, email: 'x@y.nz' })).status, 400);
+  // Signs for themselves: no relationship needed.
+  const big = 'data:image/png;base64,' + crypto.randomBytes(600).toString('base64');
+  const sg = await call({ action: 'sign', token: ttoken2, input: { parentName: 'Tina Teacher', initials: { part1: 'TT', part2: 'TT' }, signature: big, agree: true } });
+  assert.equal(sg.status, 200, JSON.stringify(sg.body)); assert.equal(sg.body.app.step, 'done');
+  const [row] = await sql.query(`SELECT * FROM ue_applications WHERE email = 'tina@school.nz'`);
+  assert.equal(row.waiver.relationship, 'Self'); assert.equal(row.waiver.under18, false); assert.equal(row.status, 'signed');
+  assert.equal(mails.at(-1).to, 'tina@school.nz'); assert.ok(mails.at(-1).attachments?.length);
+  assert.match(H.notes.at(-1).properties.hs_note_body, /Teacher waiver signed/);
+  const co = await call({ action: 'checkout', token: ttoken2, method: 'card' });
+  assert.equal(co.body.done, true, 'no deposit for teachers');
+
+  // Dashboard approval → Teacher label on the trip (leader portal access).
+  const ap = await svc({ action: 'approve-teacher', id: row.id, actor: 'Jake' });
+  assert.equal(ap.status, 200, JSON.stringify(ap.body)); assert.equal(ap.body.app.approval.by, 'Jake');
+  const link = H.assoc.find((a) => a.from === `contacts:${row.hubspot_contact_id}` && a.to === '2-58156993:57951798456');
+  assert.equal(link.types[0].associationTypeId, 9);
+  const [stu] = await sql.query(`SELECT id FROM ue_applications WHERE kind = 'student' AND step2_at IS NOT NULL LIMIT 1`);
+  assert.equal((await svc({ action: 'approve-teacher', id: stu.id })).status, 400);
+  const pdf = await svc({ action: 'waiver-pdf', id: row.id });
+  assert.equal(pdf.status, 200);
+
+  // Portal data source: teachers under their own form ID, never in the student list.
+  const api = (await import('../netlify/functions/jotform-api.mjs')).default;
+  const get = async (path) => (await api(new Request(`https://apply.test/api/jotform${path}${path.includes('?') ? '&' : '?'}apiKey=jf`))).json();
+  const tl = await get(`/form/${K.TEACHER_FORM_ID}/submissions?limit=1000`);
+  assert.equal(tl.content.length, 1); assert.equal(tl.content[0].form_id, K.TEACHER_FORM_ID);
+  assert.equal(tl.content[0].answers['4'].answer, 'tina@school.nz');
+  assert.ok(Object.values(tl.content[0].answers).some((a) => a.name === 'emergencyName'));
+  const sl = await get('/form/251396787451873/submissions?limit=1000');
+  assert.ok(!sl.content.some((x) => x.answers?.['4']?.answer === 'tina@school.nz'));
+  assert.equal((await get(`/submission/${row.submission_id}`)).content.form_id, K.TEACHER_FORM_ID);
+
+  // Trip leaders: same form from /<trip>/leader; approval gives the Trip Leader label.
+  const l1 = await call({ action: 'start', trip: 'otago-borneo-2027', kind: 'teacher', role: 'Trip Leader', values: { name: { first: 'Lee', last: 'Leader' }, email: 'lee@ue.nz', dob: '1980-01-01' } });
+  assert.equal(l1.body.app.role, 'Trip Leader');
+  const lsub = await call({ action: 'submit', token: l1.body.token, values: { ...values, emergencyEmail: 'kin@lee.nz' } });
+  assert.equal(lsub.status, 200, JSON.stringify(lsub.body)); assert.match(mails.at(-1).subject, /trip leader application/);
+  const again2 = await call({ action: 'start', trip: 'otago-borneo-2027', kind: 'teacher', role: 'Trip Leader', values: { name: { first: 'Lee', last: 'Leader' }, email: 'lee@ue.nz', dob: '1980-01-01' } });
+  assert.equal(again2.body.emailed, true); assert.match(mails.at(-1).text, /\/otago-borneo-2027\/leader\?t=/);
+  const [lrow] = await sql.query(`SELECT * FROM ue_applications WHERE email = 'lee@ue.nz'`);
+  assert.equal(lrow.role, 'Trip Leader');
+  await svc({ action: 'approve-teacher', id: lrow.id, actor: 'Jake' });
+  assert.equal(H.assoc.find((a) => a.from === `contacts:${lrow.hubspot_contact_id}` && a.to === '2-58156993:57951798456').types[0].associationTypeId, 10);
+  // Staff can approve under the other role.
+  const ov = await svc({ action: 'approve-teacher', id: row.id, role: 'Trip Leader' });
+  assert.equal(ov.body.app.approval.label, 'Trip Leader');
 });
 
 await pool.end();

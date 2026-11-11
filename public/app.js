@@ -1,5 +1,7 @@
 // The Unearthed application flow: apply.unearthededucation.org/<trip-slug>
 // About you → Application → Permissions packet → Deposit.
+// Teachers: apply.unearthededucation.org/<trip-slug>/teacher — their own form,
+// About you → Application → Waiver (they sign it themselves) → done.
 // The server holds everything; the browser keeps only a resume token per trip.
 import * as K from './form-kit.mjs';
 import { renderWaiver, WAIVER_CSS } from './waiver-ui.mjs';
@@ -13,9 +15,17 @@ const style = document.createElement('style');
 style.textContent = K.FORM_CSS + WAIVER_CSS + TEST_CSS;
 document.head.appendChild(style);
 
-const slug = decodeURIComponent(location.pathname.replace(/^\/+|\/+$/g, '').split('/')[0] || '').toLowerCase();
+const pathParts = location.pathname.replace(/^\/+|\/+$/g, '').split('/');
+const slug = decodeURIComponent(pathParts[0] || '').toLowerCase();
+// /<trip>/teacher and /<trip>/leader: the same teacher form; the link sets the role.
+const SEG = String(pathParts[1] || '').toLowerCase();
+const KIND = SEG === 'teacher' || SEG === 'leader' ? 'teacher' : 'student';
+const TEACHER = KIND === 'teacher';
+const ROLE = SEG === 'leader' ? 'Trip Leader' : 'Teacher';
+const ROLE_LC = ROLE.toLowerCase();
+const BASE = `/${slug}${TEACHER ? `/${SEG}` : ''}`;
 const params = new URLSearchParams(location.search);
-const TOKEN_KEY = `ue-apply:${slug}`;
+const TOKEN_KEY = `ue-apply:${slug}${TEACHER ? ':teacher' : ''}`;
 const S = { trip: null, form: null, app: null, token: null, prefill: {}, form1: null, form2: null, waiverUi: null };
 // ?preview=1: nothing saved or sent. ?test=1: real run with a "Fill test answers" button. See test-kit.mjs.
 const PREVIEW = params.get('preview') === '1';
@@ -28,7 +38,7 @@ const store = {
 };
 
 async function api(method, body, qs = '') {
-  if (PREVIEW && method === 'POST') return previewReply(body?.action, body, { state: previewState, trip: S.trip });
+  if (PREVIEW && method === 'POST') return previewReply(body?.action, body, { state: previewState, trip: S.trip, kind: KIND });
   const res = await fetch(`/api/apply${qs}`, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
   let data = null; try { data = await res.json(); } catch { /* ignore */ }
   if (!res.ok) throw Object.assign(new Error(data?.error || `Something went wrong (${res.status}).`), { status: res.status, fields: data?.fields });
@@ -43,14 +53,15 @@ function notice(kind, html) {
 function header() {
   const t = S.trip;
   $('#tripHead').innerHTML = t ? `<strong>${esc(t.destination || t.name)}</strong>${esc(t.school || '')}` : '';
-  document.title = t ? `Apply — ${t.name} — Unearthed Education` : 'Apply — Unearthed Education';
+  document.title = t ? `${TEACHER ? `${ROLE} application` : 'Apply'} — ${t.name} — Unearthed Education` : 'Apply — Unearthed Education';
 }
 
 function steps(active) {
   const order = ['about', 'application', 'waiver', 'deposit'];
   if (active === 'waiting') active = 'waiver';
   const el = $('#steps');
-  if (S.trip?.schoolCollecting) el.querySelector('[data-s=deposit]').classList.add('hidden');
+  if (S.trip?.schoolCollecting || TEACHER) el.querySelector('[data-s=deposit]').classList.add('hidden');
+  if (TEACHER) el.querySelector('[data-s=waiver]').textContent = 'Waiver';
   el.classList.toggle('hidden', !active || active === 'closed');
   const i = order.indexOf(active === 'done' ? 'deposit' : active);
   el.querySelectorAll('li').forEach((li, j) => {
@@ -70,7 +81,7 @@ async function boot() {
   if (urlToken) {
     store.set(urlToken);
     const rest = new URLSearchParams(location.search); rest.delete('t');
-    history.replaceState(null, '', `/${slug}${rest.toString() ? `?${rest}` : ''}`);
+    history.replaceState(null, '', `${BASE}${rest.toString() ? `?${rest}` : ''}`);
   }
   S.token = urlToken || store.get();
   try {
@@ -85,7 +96,7 @@ async function boot() {
       }
     }
     if (!S.form) {
-      const r = await api('GET', null, `?trip=${encodeURIComponent(slug)}`);
+      const r = await api('GET', null, `?trip=${encodeURIComponent(slug)}${TEACHER ? '&kind=teacher' : ''}`);
       Object.assign(S, { trip: r.trip, form: r.form, prefill: r.prefill || {} });
     }
   } catch (e) {
@@ -103,16 +114,16 @@ async function boot() {
         ? `<h1>Deposit received</h1><p class="lede">Thank you — the place on <strong>${esc(S.trip.name)}</strong> is confirmed. We've emailed a confirmation.</p>`
         : `<h1>Payment processing</h1><p class="lede">Thank you — a bank payment can take a few working days to clear. We'll email when it does.</p>`;
     } catch (e) { view.innerHTML = `<h1>Payment</h1><p class="lede">${esc(e.message)}</p>`; }
-    history.replaceState(null, '', `/${slug}`);
+    history.replaceState(null, '', BASE);
     return;
   }
   if (params.get('session_id') && S.token) {
     view.innerHTML = '<div class="loading">Confirming your payment…</div>';
     try { const r = await api('POST', { action: 'confirm', token: S.token, sessionId: params.get('session_id') }); S.app = r.app; } catch (e) { notice('bad', esc(e.message)); }
-    history.replaceState(null, '', `/${slug}`);
+    history.replaceState(null, '', BASE);
   } else if (params.get('cancelled')) {
     notice('warn', 'The payment was cancelled — nothing was charged. You can try again below.');
-    history.replaceState(null, '', `/${slug}`);
+    history.replaceState(null, '', BASE);
   }
   go();
 }
@@ -138,7 +149,7 @@ function closed() {
 function about() {
   const step = K.getStep(S.form, 'step1');
   view.innerHTML = `<h1>${esc(step?.title || 'About you')}</h1>
-    <p class="lede">${esc(step?.intro || text('aboutIntro', `Apply for ${S.trip.name}. It takes about 20 minutes — you can leave and come back with the link we email you.`))}</p>
+    <p class="lede">${esc(step?.intro || text('aboutIntro', TEACHER ? `${ROLE} application for ${S.trip.name}. It takes about 15 minutes — you can leave and come back with the link we email you.` : `Apply for ${S.trip.name}. It takes about 20 minutes — you can leave and come back with the link we email you.`))}</p>
     <div id="form"></div>
     <div class="actions"><button class="btn btn--primary btn--lg" id="next">${esc(step?.submitLabel || 'Continue')}</button></div>
     ${resumeBox()}`;
@@ -150,7 +161,7 @@ function about() {
     if (!v.ok) { form.focusFirstError(); return; }
     busy(e.currentTarget, 'Saving…', async () => {
       try {
-        const r = await api('POST', { action: 'start', trip: slug, values: form.values(), attribution: attribution() });
+        const r = await api('POST', { action: 'start', trip: slug, kind: KIND, ...(TEACHER ? { role: ROLE } : {}), values: form.values(), attribution: attribution() });
         if (r.emailed) {
           view.innerHTML = `<h1>Check your inbox</h1><p class="lede">You've already started an application for this trip with <strong>${esc(form.values().email)}</strong>. We've emailed you a link to carry on where you left off.</p><p class="muted">Can't find it? Check your spam folder, or contact us.</p>`;
           return;
@@ -163,13 +174,13 @@ function about() {
 
 function resumeBox() {
   return `<details class="resume" style="margin-top:22px"><summary class="muted" style="cursor:pointer">Already started? Get a link to continue</summary>
-    <div style="margin-top:12px"><label class="field"><span>The student's email</span><input id="resumeEmail" type="email" autocomplete="email"></label>
+    <div style="margin-top:12px"><label class="field"><span>${TEACHER ? 'Your email' : 'The student\'s email'}</span><input id="resumeEmail" type="email" autocomplete="email"></label>
     <button class="btn" id="resumeBtn">Email me a link</button></div></details>`;
 }
 function wireResume() {
   $('#resumeBtn')?.addEventListener('click', (e) => busy(e.currentTarget, 'Sending…', async () => {
     try {
-      await api('POST', { action: 'resume', trip: slug, email: $('#resumeEmail').value });
+      await api('POST', { action: 'resume', trip: slug, kind: KIND, email: $('#resumeEmail').value });
       notice('ok', 'If there\'s an application for that email, a link to continue is on its way.');
     } catch (err) { notice('bad', esc(err.message)); }
   }));
@@ -189,7 +200,7 @@ let saveTimer = null;
 function application() {
   const step = K.getStep(S.form, 'step2');
   view.innerHTML = `<h1>${esc(step?.title || 'Your application')}</h1>
-    <p class="lede">${esc(step?.intro || text('applicationIntro', 'Your answers save as you go. Medical and passport details go only to the Unearthed team and your trip leaders.'))}</p>
+    <p class="lede">${esc(step?.intro || text('applicationIntro', TEACHER ? 'Your answers save as you go. Medical and passport details go only to the Unearthed team and the trip\'s leaders.' : 'Your answers save as you go. Medical and passport details go only to the Unearthed team and your trip leaders.'))}</p>
     <div id="form"></div>
     <div class="actions"><button class="btn btn--primary btn--lg" id="submit">${esc(step?.submitLabel || 'Submit application')}</button><span class="saved" id="saved"></span></div>`;
   const form = S.form2 = K.renderStep($('#form'), S.form, 'step2', {
@@ -233,6 +244,7 @@ async function uploadFile(file, field) {
 function waiver() {
   S.waiverUi = null;
   const a = S.app.answers || {};
+  if (TEACHER || S.app.kind === 'teacher') return teacherWaiver(a);
   const p1 = a.parent1Name;
   const parentName = p1 && typeof p1 === 'object' ? `${p1.first || ''} ${p1.last || ''}`.trim() : String(p1 || '');
   view.innerHTML = `<h1>${esc(S.form.waiver?.title || 'Permissions packet')}</h1>
@@ -269,6 +281,24 @@ function waiver() {
       });
     }
   }));
+}
+
+/** Teachers read and sign it themselves — no parent, no emailed link. */
+function teacherWaiver(a) {
+  const n = a.name;
+  const name = n && typeof n === 'object' ? `${n.first || ''} ${n.last || ''}`.trim() : String(n || '');
+  view.innerHTML = `<h1>${esc(S.form.waiver?.title || 'Waiver')}</h1>
+    <p class="lede">${esc(text('waiverIntro', 'Please read each part, add your initials, and sign at the bottom.'))}</p>
+    <div id="mode"></div>`;
+  S.waiverUi = renderWaiver($('#mode'), S.form.waiver, {
+    under18: false, self: true, parentName: name, submitLabel: 'Sign',
+    onSubmit: async (input, showErrors) => {
+      try {
+        const r = await api('POST', { action: 'sign', token: S.token, input });
+        S.app = r.app; notice('ok', 'Signed — thank you. We\'ve emailed you a copy.'); go();
+      } catch (err) { if (err.fields) showErrors(err.fields); else notice('bad', esc(err.message)); }
+    },
+  });
 }
 
 // ── waiting for the parent ─────────────────────────────────────────────────
@@ -310,6 +340,12 @@ function deposit() {
 // ── done ────────────────────────────────────────────────────────────────────
 
 function done() {
+  if (TEACHER || S.app.kind === 'teacher') {
+    view.innerHTML = `<h1>Application complete</h1>
+      <p class="lede">Thank you — your ${esc(ROLE_LC)} application for <strong>${esc(S.trip.name)}</strong> is complete and your waiver is signed. We've emailed you a copy.</p>
+      <p>${esc(text('doneNext', 'The Unearthed team will be in touch, and will give you access to the trip in the leader portal.'))}</p>`;
+    return;
+  }
   const paid = S.app.deposit?.status === 'paid';
   view.innerHTML = `<h1>${paid ? 'You\'re in!' : 'Application complete'}</h1>
     <p class="lede">${paid ? `Your deposit is paid and your place on <strong>${esc(S.trip.name)}</strong> is confirmed.` : `Your application for <strong>${esc(S.trip.name)}</strong> is complete and the permissions packet is signed.`} We've emailed a confirmation.</p>
@@ -333,17 +369,18 @@ function fail(err, form) {
 
 function previewState(step, answers = {}, waiver = undefined, deposit = null) {
   return {
+    kind: KIND,
     status: step === 'done' ? 'paid' : 'applied', step,
     answers: { ...(S.app?.answers || {}), ...answers },
     waiver: waiver === undefined ? S.app?.waiver || null : waiver,
     deposit: deposit || (step === 'done' ? { status: 'paid' } : null),
-    under18: true,
+    under18: !TEACHER,
   };
 }
 
 async function bootPreview() {
   try {
-    const r = await fetch(`/api/apply?trip=${encodeURIComponent(slug)}`).then(async (x) => { const d = await x.json(); if (!x.ok) throw new Error(d.error); return d; });
+    const r = await fetch(`/api/apply?trip=${encodeURIComponent(slug)}${TEACHER ? '&kind=teacher' : ''}`).then(async (x) => { const d = await x.json(); if (!x.ok) throw new Error(d.error); return d; });
     Object.assign(S, { trip: r.trip, form: r.form, prefill: r.prefill || {}, token: 'preview' });
   } catch (e) { view.innerHTML = `<h1>Preview</h1><p class="lede">${esc(e.message)}</p>`; return; }
   header();
@@ -355,7 +392,7 @@ function testBar() {
   bar.className = `pvbar${PREVIEW ? '' : ' test'}`;
   bar.innerHTML = PREVIEW
     ? `<span><strong>Preview</strong> — nothing is saved or sent.</span>
-       <span class="jump">Jump to: ${[['about', 'About you'], ['application', 'Application'], ['waiver', 'Permissions'], ['waiting', 'Waiting for parent'], ['deposit', 'Deposit'], ['done', 'Done']].map(([k, l]) => `<button data-jump="${k}">${l}</button>`).join('')}</span>
+       <span class="jump">Jump to: ${(TEACHER ? [['about', 'About you'], ['application', 'Application'], ['waiver', 'Waiver'], ['done', 'Done']] : [['about', 'About you'], ['application', 'Application'], ['waiver', 'Permissions'], ['waiting', 'Waiting for parent'], ['deposit', 'Deposit'], ['done', 'Done']]).map(([k, l]) => `<button data-jump="${k}">${l}</button>`).join('')}</span>
        <button class="fill" id="tFill">Fill test answers</button>`
     : `<span><strong>Test run</strong> — this is a REAL application (HubSpot, Jotform, emails, Stripe).</span>
        <button class="fill" id="tFill">Fill test answers</button><span style="opacity:.85">Emails are left for you to type, so the messages reach you.</span>`;
@@ -376,7 +413,7 @@ async function fillTest() {
     const cur = S.form1.values();
     const vals = { ...cur, ...sampleValues(S.form, 'step1', { keepEmails, current: cur }) };
     S.form1 = K.renderStep($('#form'), S.form, 'step1', { values: vals });
-    if (keepEmails && !vals.email) notice('warn', 'Filled — type the student\'s email (use one you can check), then Continue.');
+    if (keepEmails && !vals.email) notice('warn', `Filled — type ${TEACHER ? 'your' : 'the student\'s'} email (use one you can check), then Continue.`);
     return;
   }
   if (step === 'application' && S.form2) {
@@ -392,13 +429,13 @@ async function fillTest() {
     }
     S.app = { ...S.app, answers: { ...(S.app.answers || {}), ...vals } };
     application();
-    if (keepEmails && !vals.parent1Email) notice('warn', 'Filled — type the parent/guardian email (use one you can check), then Submit.');
+    if (keepEmails && !TEACHER && !vals.parent1Email) notice('warn', 'Filled — type the parent/guardian email (use one you can check), then Submit.');
     return;
   }
   if (step === 'waiver') {
     if (!S.waiverUi) { $('[data-mode=here]')?.click(); }
-    const p1 = S.app?.answers?.parent1Name;
-    S.waiverUi?.fillTest(p1 && typeof p1 === 'object' ? `${p1.first} ${p1.last}` : String(p1 || 'Test Parent'));
+    const p1 = TEACHER ? S.app?.answers?.name : S.app?.answers?.parent1Name;
+    S.waiverUi?.fillTest(p1 && typeof p1 === 'object' ? `${p1.first} ${p1.last}` : String(p1 || (TEACHER ? `Test ${ROLE}` : 'Test Parent')));
     $('#wvSubmit')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     return;
   }

@@ -138,3 +138,24 @@ console.log(`${n} passed`);
   assert.equal(repairSyntheticQids(s), 0);
   console.log('ok synthetic qids');
 }
+
+// Teacher form: the student form minus guardians, plus one emergency contact.
+{
+  const K2 = await import('../public/form-kit.mjs');
+  const { schema: t, removed } = K2.teacherSchemaFrom(schema);
+  const keys = K2.allFields(t).map(({ field }) => field.key);
+  for (const k of ['parent1Name', 'parent1Email', 'parent1Phone', 'parent1Relationship', 'secondary', 'parent2Name', 'parent2Email', 'q73']) assert.ok(!keys.includes(k), `removed ${k}`);
+  for (const k of ['name', 'email', 'dob', 'passportNumber', 'passportPhoto', 'asthma', 'program', 'waiverSigned', 'currency', 'emergencyName', 'emergencyRelationship', 'emergencyPhone', 'emergencyEmail']) assert.ok(keys.includes(k), `kept/added ${k}`);
+  assert.ok(removed.includes('Primary Contact Name') || removed.length >= 6);
+  assert.equal(K2.formKind(t), 'teacher'); assert.equal(t.settings.jotform.formId, K2.TEACHER_FORM_ID);
+  assert.deepEqual(K2.lintSchema(t).filter((l) => l.level === 'error'), [], JSON.stringify(K2.lintSchema(t)));
+  assert.ok(K2.lintSchema(schema).length === 0 || !K2.lintSchema(schema).some((l) => /parent1/.test(l.message)));
+  const ids = K2.allFields(t).map(({ field }) => field.qid).filter((q) => /^x/.test(q));
+  assert.equal(new Set(ids).size, ids.length, 'unique new IDs');
+  // Emergency contact can't reuse the teacher's own email.
+  const errs = K2.uniquenessErrors(t, 'step2', { email: 'a@b.nz', emergencyEmail: 'A@b.nz' });
+  assert.match(errs.emergencyEmail, /your own email/);
+  // The student form itself is untouched.
+  assert.ok(K2.allFields(schema).some(({ field }) => field.key === 'parent1Name'));
+  console.log('ok teacher form');
+}

@@ -7,6 +7,7 @@
 //   POST { action: "send-waiver", id, email? }  (re)send the parent signing link
 //   POST { action: "withdraw", id, actor }
 //   POST { action: "waiver-pdf", id }           → application/pdf
+//   POST { action: "approve-teacher", id, actor, role? } Teacher / Trip Leader label on the trip (→ leader portal)
 import * as W from "../../public/waiver-kit.mjs";
 import { q, appById, publishedSchema } from "./_lib/db.mjs";
 import { json, readJson, serviceOk, errorResponse, bad, newToken, hashToken, siteUrl } from "./_lib/http.mjs";
@@ -22,8 +23,15 @@ export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
   try {
     const b = await readJson(req);
-    const { schema } = await publishedSchema({ fresh: true });
+    // The form that goes with the application (student or teacher).
+    const target = b.id ? await appById(b.id) : null;
+    const { schema } = await publishedSchema({ fresh: true, kind: target?.kind }).catch((e) => { if (target?.kind === "teacher") throw e; return publishedSchema({ fresh: true }); });
     switch (b.action) {
+      case "approve-teacher": {
+        const app = await need(b.id);
+        const row = await Sync.approveTeacher(app, { actor: b.actor, schema, role: b.role });
+        return json({ app: row });
+      }
       case "resync": {
         const app = await need(b.id);
         __clearTripCache();
@@ -36,6 +44,7 @@ export default async (req) => {
       case "import": return json({ app: await Imp.importApplicant({ email: b.email, slug: b.slug, dealId: b.dealId, actor: b.actor, schema }) });
       case "send-waiver": {
         const app = await need(b.id);
+        if (app.kind === "teacher") throw bad("Teachers sign their own waiver from their application link.", 400);
         if (app.waiver?.status === "signed") throw bad("Already signed.", 409);
         const to = String(b.email || app.waiver?.sentTo || app.answers?.parent1Email || "").trim().toLowerCase();
         if (!to.includes("@")) throw bad("No parent email to send to.");
@@ -57,7 +66,7 @@ export default async (req) => {
         if (app.waiver?.status !== "signed") throw bad("Not signed yet.", 404);
         const trip = (await tripBySlug(app.trip_slug)) || { name: app.program_name };
         const name = app.answers?.name || {};
-        const bytes = waiverPdf({ waiver: app.waiver.text?.parts ? app.waiver.text : W.waiverOf(schema), under18: app.waiver.under18 ?? isUnder18(app), student: { name: [name.first, name.last].filter(Boolean).join(" ") || app.email, dob: app.answers?.dob }, trip, signed: { ...app.waiver, signature: app.waiver_signature } });
+        const bytes = waiverPdf({ waiver: app.waiver.text?.parts ? app.waiver.text : W.waiverOf(schema), under18: app.waiver.under18 ?? isUnder18(app), student: { name: [name.first, name.last].filter(Boolean).join(" ") || app.email, dob: app.answers?.dob }, trip, signed: { ...app.waiver, signature: app.waiver_signature }, role: app.kind === "teacher" ? "Teacher" : "Student" });
         return new Response(bytes, { headers: { "Content-Type": "application/pdf", "Cache-Control": "no-store" } });
       }
       default: return json({ error: "Unknown action" }, 400);

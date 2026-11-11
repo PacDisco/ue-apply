@@ -26,6 +26,8 @@ export const UE_PIPELINE = process.env.UE_DEAL_PIPELINE || "836668844"; // "Unea
 const COMPANY_TAG = process.env.UE_COMPANY_TAG || "Unearthed Education";
 const STUDENT_LABEL = process.env.UE_STUDENT_LABEL || "Student";
 const PARENT_LABEL = process.env.UE_PARENT_LABEL || "Parent";
+export const TEACHER_LABEL = process.env.UE_TEACHER_LABEL || "Teacher";
+export const TRIP_LEADER_LABEL = process.env.UE_TRIP_LEADER_LABEL || "Trip Leader";
 
 const nameOf = (v) => (v && typeof v === "object" ? { first: String(v.first || "").trim(), last: String(v.last || "").trim() } : splitName(v));
 export function splitName(s) {
@@ -125,6 +127,11 @@ export async function syncApplication(app, { schema, trip, only = null, waiverSi
   if (hubspotOn && (want("contact") || !app.hubspot_contact_id)) await syncContact(app, schema).then((r) => { out.contact = r; });
   const contactId = app.hubspot_contact_id;
 
+  // Teachers: their contact only. No parents, no deal, nothing in Jotform —
+  // and NOT linked to the trip until staff approve them (approveTeacher):
+  // the "Teacher" label on the trip opens the leader portal.
+  if (app.kind === "teacher") return out;
+
   let parentIds = Array.isArray(app.hubspot_parent_ids) ? app.hubspot_parent_ids : [];
   if (hubspotOn && contactId && want("parents")) {
     await step(app, "parents", async () => {
@@ -213,4 +220,26 @@ export async function mirrorToJotform(app, { schema, trip, formId, waiverSigned 
   app.submission_id = sid;
   app.jotform_submission_id = sid;
   return { id: sid, created: true };
+}
+
+/**
+ * Staff approval of a teacher: link their contact to the trip's Unearthed
+ * Program record with the Teacher label — which is what lets them into the
+ * leader portal (rosters, medical and passport details). Idempotent.
+ */
+export async function approveTeacher(app, { actor, schema, role = null } = {}) {
+  if (app.kind !== "teacher") throw Object.assign(new Error("Only teacher applications can be approved."), { status: 400 });
+  if (!app.step2_at) throw Object.assign(new Error("They haven't finished the application yet."), { status: 409 });
+  if (!app.program_id) throw Object.assign(new Error("This application isn't linked to a trip."), { status: 409 });
+  if (!app.hubspot_contact_id) await syncContact(app, schema);
+  if (!app.hubspot_contact_id) throw Object.assign(new Error("Their HubSpot contact couldn't be created — try Retry sync."), { status: 502 });
+  // The role they applied for (their link), unless staff choose the other one.
+  const asLeader = /leader/i.test(String(role || app.role || ""));
+  const label = asLeader ? TRIP_LEADER_LABEL : TEACHER_LABEL;
+  const r = await HS.associate("contacts", app.hubspot_contact_id, PROGRAM_OBJECT, app.program_id, label);
+  if (!r?.label) throw Object.assign(new Error(`HubSpot has no "${label}" association label between contacts and Unearthed Programs, so they were linked without it (no leader-portal access). Check the label name (${asLeader ? "UE_TRIP_LEADER_LABEL" : "UE_TEACHER_LABEL"}).`), { status: 502 });
+  const approval = { at: new Date().toISOString(), by: actor || null, programId: String(app.program_id), label };
+  const [row] = await q(`UPDATE ue_applications SET approval = $2, updated_at = now() WHERE id = $1 RETURNING *`, [app.id, JSON.stringify(approval)]);
+  await noteSync(app.id, "teacher", { ok: true, programId: String(app.program_id), label });
+  return row;
 }

@@ -9,6 +9,16 @@
 | 3 · Permissions packet | A parent or guardian signs — on the student's device ("they're with me now"), or from an emailed link (`/sign?t=…`) on their own phone. **No deposit until it's signed** (every student is under 18). | Initials on each part (both parts for everyone by default), drawn signature, stored with the exact wording signed, IP and time. A PDF goes onto the student's and parents' HubSpot contacts and the deal; Jotform's "I have completely read and signed the permissions packet" is ticked; the signer gets a copy by email. A parent who signs from the link goes straight on to the deposit on the same page. |
 | 4 · Deposit | Card (+3%) or NZ bank account (no fee, NZD trips) on Stripe Checkout — paid by the student from their link, or by the parent right after signing | Deposit = `payment_amount_1` on the trip's program record (or the dashboard override), currency = `program_currency`. Stripe metadata carries `hubspot_deal_id` and `base_amount`, so the dashboard's **payment sync** logs exactly the deposit on exactly this deal and moves it to **Deposit Paid**. Confirmation email to the student (parents cc'd) with the portal link. |
 
+### Teachers & trip leaders
+
+One more form, edited on the dashboard under **Teachers & leaders** (it starts as a copy of the student form without the parent / guardian questions, plus one emergency contact):
+
+- `apply.unearthededucation.org/<trip>/teacher` → role **Teacher**; `…/<trip>/leader` → role **Trip Leader**. Same form; the link sets the role.
+- About you → Application → **Waiver, signed by themselves** (no parent, no relationship) → done. No deposit, no deal, nothing in Jotform. Their HubSpot contact is created/updated; the signed PDF goes on it as a note and a copy is emailed to them.
+- They are **not** put on the trip automatically: the Teacher / Trip Leader label on the Unearthed Program is what opens the leader portal (rosters, medical, passports), so staff approve each one on the dashboard (**Applications → open them → Approve**), choosing Teacher or Trip Leader. Labels: `UE_TEACHER_LABEL` (default "Teacher"), `UE_TRIP_LEADER_LABEL` (default "Trip Leader").
+- The portals' data source serves their answers under form ID **990000000000001**. To show a teacher's application details in the leader portal, add that ID to the leader portal's `JOTFORM_APPLICATION_FORM_ID` (with the four existing IDs): `251396787451873,253477140703050,260388618557066,250747665126866,990000000000001`.
+- Needs `MIGRATION-ue-apply-teachers.sql`.
+
 Trips whose school collects payments (`school_collecting_payments` on the program) finish after step 3. A closed / full / past-closing-date trip refuses new applications; people already in can still finish.
 
 ## Testing without filling it in

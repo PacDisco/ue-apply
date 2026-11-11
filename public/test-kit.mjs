@@ -63,13 +63,13 @@ export async function testImageFile(name = 'test-upload.png') {
 }
 
 /** Fake server answers for preview mode. Pure (given a state factory). */
-export function previewReply(action, body, { state, trip }) {
+export function previewReply(action, body, { state, trip, kind = 'student' }) {
   switch (action) {
     case 'start': return { token: 'preview', app: state('application', body?.values || {}) };
     case 'save': return { ok: true };
     case 'submit': return { app: state('waiver', body?.values || {}), sync: {} };
     case 'send-waiver': return { app: state('waiting', {}, { status: 'sent', sentTo: body?.email || 'parent@example.com' }), emailed: true };
-    case 'sign': return { app: state(trip?.schoolCollecting ? 'done' : 'deposit', {}, { status: 'signed', parentName: body?.input?.parentName }) };
+    case 'sign': return { app: state(trip?.schoolCollecting || kind === 'teacher' ? 'done' : 'deposit', {}, { status: 'signed', parentName: body?.input?.parentName }) };
     case 'checkout': return { preview: true };
     case 'resume': return { ok: true };
     default: return {};

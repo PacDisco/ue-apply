@@ -18,18 +18,25 @@ export function db() {
 export const q = (text, params = []) => db().query(text, params);
 
 export const FORM_ID = "ue-application";
+/** The forms, by applicant kind (rows in ue_apply_forms). */
+export const FORM_IDS = { student: "ue-application", teacher: "ue-teacher-application" };
+export const KINDS = Object.keys(FORM_IDS);
+export const kindOf = (k) => (k === "teacher" ? "teacher" : "student");
 
-let _schemaCache = null;
+const _schemaCache = new Map();
 const SCHEMA_TTL_MS = 30 * 1000;
-export function __clearSchemaCache() { _schemaCache = null; }
+export function __clearSchemaCache() { _schemaCache.clear(); }
 
-/** The PUBLISHED form schema (with its rev), cached briefly per warm container. */
-export async function publishedSchema({ fresh = false } = {}) {
-  if (!fresh && _schemaCache && Date.now() - _schemaCache.at < SCHEMA_TTL_MS) return _schemaCache;
-  const [row] = await q(`SELECT published, published_rev FROM ue_apply_forms WHERE id = $1`, [FORM_ID]);
-  if (!row || !row.published) throw Object.assign(new Error("The application form hasn't been published yet."), { status: 503 });
-  _schemaCache = { at: Date.now(), schema: row.published, rev: row.published_rev };
-  return _schemaCache;
+/** The PUBLISHED form schema (with its rev) for `kind`, cached briefly per warm container. */
+export async function publishedSchema({ fresh = false, kind = "student" } = {}) {
+  const k = kindOf(kind);
+  const hit = _schemaCache.get(k);
+  if (!fresh && hit && Date.now() - hit.at < SCHEMA_TTL_MS) return hit;
+  const [row] = await q(`SELECT published, published_rev FROM ue_apply_forms WHERE id = $1`, [FORM_IDS[k]]);
+  if (!row || !row.published) throw Object.assign(new Error(k === "teacher" ? "The teacher application form hasn't been published yet." : "The application form hasn't been published yet."), { status: 503 });
+  const out = { at: Date.now(), schema: row.published, rev: row.published_rev };
+  _schemaCache.set(k, out);
+  return out;
 }
 
 export async function appById(id) {
