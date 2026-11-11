@@ -332,6 +332,14 @@ await t('portal data source (/api/jotform): ours from the database, the rest fro
   await pool.query(`UPDATE ue_apply_forms SET published = draft`); db.__clearSchemaCache();
 });
 
+await t('confirmation email on submit: the student, parents copied, once', async () => {
+  const conf = mails.filter((m) => /^Application received/.test(m.subject) && m.to === 'ana@rua.nz');
+  assert.equal(conf.length, 1, 'sent once (resubmits don\'t repeat it)');
+  assert.ok(conf[0].cc && conf[0].cc.length > 0, 'parents copied'); assert.ok(!conf[0].cc.includes('ana@rua.nz'));
+  assert.match(conf[0].text, /permissions packet/);
+  const [row] = await sql.query(`SELECT sync FROM ue_applications WHERE lower(email) = 'ana@rua.nz' AND kind = 'student'`);
+  assert.equal(row.sync.confirmation.ok, true);
+});
 await t('teacher form: /<trip>/teacher — own form, signs own waiver, no deposit/deal/Jotform, approval adds the Teacher label', async () => {
   const K = await import('../public/form-kit.mjs');
   const { schema: tschema } = K.teacherSchemaFrom(schema);
@@ -363,6 +371,8 @@ await t('teacher form: /<trip>/teacher — own form, signs own waiver, no deposi
   const sub = await call({ action: 'submit', token: ttoken2, values });
   assert.equal(sub.status, 200, JSON.stringify(sub.body)); assert.equal(sub.body.app.step, 'waiver');
   assert.equal(H.deals.size, before.deals, 'no deal'); assert.equal(J.subs.size, before.jot, 'nothing in Jotform');
+  const tconf = mails.find((m) => /^Application received/.test(m.subject) && m.to === 'tina@school.nz');
+  assert.ok(tconf, 'teacher confirmation'); assert.equal(tconf.cc, undefined, 'no parents for teachers'); assert.match(tconf.text, /teacher application/);
   assert.ok(!H.assoc.slice(before.assoc).some((a) => a.to.startsWith('2-58156993:')), 'not on the trip until approved');
   assert.ok([...H.contacts.values()].some((c) => c.properties.email === 'tina@school.nz'));
   assert.ok(![...H.contacts.values()].some((c) => c.properties.email === 'tom@home.nz'), 'emergency contact is not a HubSpot contact');

@@ -210,6 +210,7 @@ export async function submit({ token, values }) {
         status = CASE WHEN status = 'started' THEN 'applied' ELSE status END, updated_at = now()
       WHERE id = $1 RETURNING *`, [app.id, JSON.stringify(answers), rev]);
   const sync = await Sync.syncApplication(row, { schema, trip });
+  if (first) await sendConfirmation(row, { schema, trip });
   if (first) {
     const teacher = isTeacher(row);
     const role = roleOf(row.role);
@@ -221,6 +222,23 @@ export async function submit({ token, values }) {
     ]).catch(() => {});
   }
   return { app: stateOf(row, trip), sync: Object.fromEntries(Object.entries(sync).map(([k, r]) => [k, !!r?.ok])) };
+}
+
+/**
+ * "Application received" — to the applicant, with the parents / guardians on
+ * the application copied in (students). Once per application; never blocks.
+ */
+export async function sendConfirmation(app, { schema, trip }) {
+  const own = String(app.email || "").toLowerCase();
+  const cc = isTeacher(app) ? [] : [...new Set([app.answers?.parent1Email, app.answers?.parent2Email]
+    .map((e) => String(e || "").trim().toLowerCase())
+    .filter((e) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e) && e !== own))];
+  try {
+    const r = await N.sendKind("submitted", { to: [app.email], cc, schema, vars: { student: studentName(app), studentFirst: firstName(app) || "there", trip: trip.name, school: trip.school, role: roleOf(app.role).toLowerCase() } });
+    await noteSync(app.id, "confirmation", { ok: !r.skipped, to: app.email, cc, ...(r.skipped ? { error: r.skipped } : {}) });
+  } catch (e) {
+    await noteSync(app.id, "confirmation", { ok: false, error: String(e.message).slice(0, 300) }).catch(() => {});
+  }
 }
 
 // ── uploads ─────────────────────────────────────────────────────────────────

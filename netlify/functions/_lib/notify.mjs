@@ -12,7 +12,7 @@
 // has a subject and a message with {{student}}, {{studentFirst}}, {{trip}},
 // {{school}}, {{link}}, {{amount}}, {{parent}} placeholders.
 import nodemailer from "nodemailer";
-import { DEFAULT_EMAILS } from "../../../public/emails.mjs";
+import { DEFAULT_EMAILS, defaultEmail } from "../../../public/emails.mjs";
 
 export { DEFAULT_EMAILS };
 
@@ -41,7 +41,7 @@ export function fill(tpl, vars) {
 /** Subject, text and HTML for one email kind. Pure (tested). */
 export function compose(kind, vars, schema) {
   const o = schema?.settings?.emails?.[kind] || {};
-  const d = DEFAULT_EMAILS[kind];
+  const d = defaultEmail(kind, schema?.settings?.kind === "teacher" ? "teacher" : "student");
   const subject = fill(o.subject || d.subject, vars);
   const text = fill(o.body || d.body, vars);
   const html = `<div style="font-family:Inter,Arial,sans-serif;font-size:15px;line-height:1.55;color:#231f20;max-width:560px">${text.split(/\n{2,}/).map((p) => {
