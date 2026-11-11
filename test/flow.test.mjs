@@ -68,6 +68,7 @@ const jotform = async (url, opts = {}) => {
   let mm;
   if ((mm = /^\/form\/(\d+)\/submissions$/.exec(u.pathname)) && opts.method === 'POST') { const id = String(J.next++); J.subs.set(id, { form: mm[1], params }); return res({ responseCode: 200, content: { submissionID: id } }); }
   if ((mm = /^\/submission\/(\d+)$/.exec(u.pathname)) && opts.method === 'POST') { Object.assign(J.subs.get(mm[1]).params, params); return res({ responseCode: 200, content: {} }); }
+  if (u.pathname === '/user') return res({ responseCode: 200, content: {} });
   if ((mm = /^\/submission\/(\d+)$/.exec(u.pathname))) return J.subs.has(mm[1]) || mm[1] === '999' ? res({ responseCode: 200, content: { id: mm[1], from: 'jotform' } }) : res({ responseCode: 404, message: 'not found' }, 404);
   if ((mm = /^\/form\/(\d+)\/submissions$/.exec(u.pathname))) {
     J.lastList = u.searchParams.toString();
@@ -318,6 +319,16 @@ await t('portal data source (/api/jotform): ours from the database, the rest fro
   assert.deepEqual((await get('/form/261220345497052/submissions')).body.content, []);
   assert.equal((await get('/submission/999')).status, 404);
   delete process.env.JOTFORM_FALLBACK;
+
+  // Never lose Jotform's data because of ours: form unpublished / migration missing.
+  await pool.query(`UPDATE ue_apply_forms SET published = NULL`); db.__clearSchemaCache();
+  const still = await get('/form/251396787451873/submissions?limit=1000');
+  assert.equal(still.status, 200); assert.ok(still.body.content.some((s) => s.id === '999'), 'Jotform data still served');
+  assert.equal((await get('/form/261220345497052/submissions')).status, 200);
+  const h = await (await api(new Request('https://apply.test/api/jotform/health?apiKey=jf'))).json();
+  assert.equal(h.formPublished, false); assert.equal(h.apiKeyAccepted, true); assert.equal(h.migrationRun, true); assert.equal(h.database, true);
+  assert.equal((await (await api(new Request('https://apply.test/api/jotform/health?apiKey=wrong'))).json()).apiKeyAccepted, false);
+  await pool.query(`UPDATE ue_apply_forms SET published = draft`); db.__clearSchemaCache();
 });
 
 await pool.end();

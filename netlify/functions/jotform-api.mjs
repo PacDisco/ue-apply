@@ -93,30 +93,57 @@ async function findServed(id) {
   return app || null;
 }
 
+/**
+ * Our applications for the list, or [] if anything about them fails (form not
+ * published yet, migration not run, database down). Jotform's data must never
+ * be lost because of ours — the portals would show nothing.
+ */
+async function oursSafely() {
+  try {
+    const { schema } = await publishedSchema();
+    return { schema, ours: (await servedApps()).map((a) => shape(a, schema)) };
+  } catch (err) {
+    console.error("[jotform-api] serving Jotform only:", err?.message || err);
+    return { schema: null, ours: [], error: err };
+  }
+}
+
+/** The application form's ID without needing the published schema. */
+async function appFormIdSafely() {
+  try { return G.appFormId((await publishedSchema()).schema); } catch { return G.appFormId(null); }
+}
+
 async function listSubmissions(formId, url) {
-  const { schema } = await publishedSchema();
-  if (String(formId) !== G.appFormId(schema)) return null; // not ours → Jotform
-  const ours = (await servedApps()).map((a) => shape(a, schema));
+  if (String(formId) !== await appFormIdSafely()) return null; // not ours → Jotform as-is
   const offset = Number(url.searchParams.get("offset")) || 0;
   const limit = Number(url.searchParams.get("limit")) || 20;
   if (!flag("JOTFORM_FALLBACK", true)) {
+    const { ours, error } = await oursSafely();
+    if (error) throw error;
     const own = G.ownPage(ours, { offset, limit });
     return jfJson(G.envelope(own.content, { resultSet: own.resultSet }));
   }
-  const data = await upstreamJson(`/form/${encodeURIComponent(formId)}/submissions`, url);
+  const [data, { ours }] = await Promise.all([upstreamJson(`/form/${encodeURIComponent(formId)}/submissions`, url), oursSafely()]);
   const content = G.mergePage(data.content, ours, { offset });
   return jfJson({ ...data, content, resultSet: { ...(data.resultSet || {}), count: content.length } });
 }
 
 async function getSubmission(id) {
-  const app = await findServed(id);
+  let app = null; let schema = null;
+  try {
+    app = await findServed(id);
+    if (app) schema = (await publishedSchema()).schema;
+  } catch (err) {
+    console.error("[jotform-api] submission from Jotform:", err?.message || err);
+    return null; // → Jotform
+  }
   if (!app) return null;
-  const { schema } = await publishedSchema();
   return jfJson(G.envelope(shape(app, schema).sub));
 }
 
 async function editSubmission(req, id) {
-  const app = await findServed(id);
+  let app = null;
+  try { app = await findServed(id); } catch (err) { console.error("[jotform-api] edit to Jotform:", err?.message || err); return null; }
   if (!app) return null;
   const { schema } = await publishedSchema();
   const raw = await req.text();
@@ -146,10 +173,28 @@ async function editSubmission(req, id) {
   return jfJson(G.envelope({ submissionID: String(app.submission_id), changed: r.changed, ignored: r.ignored }));
 }
 
+/** GET /api/jotform/health — what's set up, as yes/no only (no data). Add ?apiKey=… to check a portal's key. */
+async function health(url) {
+  const out = { jotformKeySet: !!process.env.JOTFORM_API_KEY, serviceKeySet: !!process.env.APPLY_SERVICE_KEY };
+  const given = url.searchParams.get("apiKey");
+  if (given) out.apiKeyAccepted = [process.env.JOTFORM_API_KEY, process.env.APPLY_SERVICE_KEY].some((k) => k && safeEqual(given, k));
+  try { await q(`SELECT 1`); out.database = true; } catch (e) { out.database = false; out.databaseError = String(e.message).slice(0, 120); }
+  try { await q(`SELECT submission_id FROM ue_applications LIMIT 1`); out.migrationRun = true; } catch { out.migrationRun = false; }
+  try { const { rev } = await publishedSchema({ fresh: true }); out.formPublished = true; out.formRev = rev; } catch { out.formPublished = false; }
+  try {
+    const r = await fetch(`${upstreamBase()}/user?apiKey=${encodeURIComponent(process.env.JOTFORM_API_KEY || "")}`, { headers: { Accept: "application/json" } });
+    out.jotformReachable = r.ok; if (!r.ok) out.jotformStatus = r.status;
+  } catch { out.jotformReachable = false; }
+  out.jotformFallback = flag("JOTFORM_FALLBACK", true); out.jotformMirror = flag("JOTFORM_MIRROR", true);
+  out.ok = out.jotformKeySet && out.jotformReachable !== false && (out.apiKeyAccepted !== false);
+  return new Response(JSON.stringify(out, null, 2), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
+}
+
 export default async (req) => {
   const url = new URL(req.url);
-  if (!authorised(req)) return jfError("You're not authorized to use this resource.", 401);
   const path = url.pathname.slice(url.pathname.indexOf(PREFIX) + PREFIX.length) || "/";
+  if (req.method === "GET" && /^\/health\/?$/.test(path)) return health(url);
+  if (!authorised(req)) return jfError("You're not authorized to use this resource.", 401);
   try {
     let m; let res = null;
     if (req.method === "GET" && (m = /^\/form\/(\d+)\/submissions\/?$/.exec(path))) res = await listSubmissions(m[1], url);

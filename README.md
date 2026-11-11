@@ -74,7 +74,10 @@ Trips whose school collects payments (`school_collecting_payments` on the progra
 **Switching a portal over** (do the SQL and this site's deploy first):
 1. Run `MIGRATION-ue-apply-submission-ids.sql` (pd-dashboard repo) in the Neon SQL editor.
 2. Deploy this site.
-3. On the portal's Netlify site: `JOTFORM_BASE_URL` = `https://apply.unearthededucation.org/api/jotform`, then redeploy. Undo = delete the variable and redeploy.
+3. Check `https://apply.unearthededucation.org/api/jotform/health?apiKey=<the portal's JOTFORM_API_KEY>` — every line should be `true` (it shows yes/no only, no data).
+4. On the portal's Netlify site: `JOTFORM_BASE_URL` = `https://apply.unearthededucation.org/api/jotform`, then redeploy. Undo = delete the variable and redeploy.
+
+If anything about this site's own data fails (form not published, migration not run, database down), the portals still get everything from Jotform — the failure is logged under the **jotform-api** function, not shown to leaders.
 
 **Later, to drop Jotform entirely:** copy every old Jotform applicant (and their files) into this database, replace the document-upload form, then `JOTFORM_MIRROR=off` and `JOTFORM_FALLBACK=off` here. The portals keep working unchanged.
 
