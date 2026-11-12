@@ -325,6 +325,7 @@ function deposit() {
   renderDeposit(view, {
     trip: S.trip, cardFeeRate: S.form.settings?.cardFeeRate ?? 0.03, intro: text('depositIntro', ''),
     processing: S.app.deposit?.status === 'processing',
+    failed: S.app.deposit?.status === 'failed',
     onPay: async (method) => {
       if (PREVIEW) {
         notice('ok', `<strong>Preview:</strong> here the family goes to Stripe to pay by ${method === 'bank' ? 'NZ bank account' : 'card'} and comes back to the confirmation. <button class="btn btn--sm" id="pvPaid">Show the confirmation</button>`);

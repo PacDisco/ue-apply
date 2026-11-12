@@ -58,3 +58,19 @@ t('merge: ours replaces the Jotform copy; database-only ones lead page 1 only', 
 });
 
 console.log(`${n} passed`);
+{
+  const PF = await import('../netlify/functions/_lib/payment-failed.mjs');
+  t('payment failed: what counts, reasons, amounts', () => {
+    assert.equal(PF.failureOf('checkout.session.expired', { payment_status: 'unpaid' }, null), null, 'walked away');
+    assert.equal(PF.failureOf('checkout.session.expired', { payment_status: 'paid' }, { last_payment_error: {} }), null);
+    assert.equal(PF.failureOf('checkout.session.expired', { payment_status: 'unpaid' }, { last_payment_error: { type: 'card_error' } }).kind, 'card');
+    assert.equal(PF.failureOf('checkout.session.async_payment_failed', { payment_status: 'unpaid' }).kind, 'bank');
+    assert.equal(PF.failureOf('checkout.session.expired', { mode: 'subscription', payment_status: 'unpaid' }, { last_payment_error: {} }), null);
+    assert.match(PF.reasonText({ decline_code: 'insufficient_funds' }), /enough funds/);
+    assert.equal(PF.reasonText({ message: 'Something odd' }), 'Something odd');
+    assert.equal(PF.moneyText(175050, 'nzd'), 'NZD 1,750.50');
+    assert.equal(PF.moneyText(5000, 'jpy'), 'JPY 5,000');
+    assert.deepEqual(PF.splitDealName('Ruby Isla Thornburgh — Nepal 2028'), { student: 'Ruby Isla Thornburgh', trip: 'Nepal 2028' });
+  });
+  console.log('ok payment failed');
+}

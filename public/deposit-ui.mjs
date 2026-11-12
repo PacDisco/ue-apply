@@ -11,7 +11,7 @@ export function money(n, cur) {
  * @param root    element to render into
  * @param o       { trip, cardFeeRate, intro, processing, onPay: async (method) => void }
  */
-export function renderDeposit(root, { trip, cardFeeRate = 0.03, intro = '', processing = false, onPay }) {
+export function renderDeposit(root, { trip, cardFeeRate = 0.03, intro = '', processing = false, failed = false, onPay }) {
   if (trip.deposit == null) {
     root.innerHTML = `<h1>Deposit</h1><p class="lede">The deposit for this trip isn't set up yet — the Unearthed team will be in touch. Everything else is saved.</p>`;
     return;
@@ -22,6 +22,7 @@ export function renderDeposit(root, { trip, cardFeeRate = 0.03, intro = '', proc
   const pct = (rate * 100).toFixed((rate * 100) % 1 ? 1 : 0);
   root.innerHTML = `<h1>Pay the deposit</h1>
     <p class="lede">${esc(intro || 'The deposit confirms the place. It counts toward the full trip cost; the rest of the payments are in the Unearthed portal.')}</p>
+    ${failed ? '<div class="notice bad">Your last payment didn\'t go through, so nothing was taken. Please try again below — or use the other payment option.</div>' : ''}
     ${processing ? '<div class="notice warn">A bank payment is processing — this can take a few working days. We\'ll email when it clears.</div>' : ''}
     <div class="pay-amount">${money(trip.deposit, trip.currency)}</div>
     <p class="muted" style="margin:0 0 18px">${esc(trip.name)}</p>

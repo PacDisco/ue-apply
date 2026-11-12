@@ -55,6 +55,8 @@ const hubspot = async (url, opts = {}) => {
   if ((mm = /^\/crm\/v4\/objects\/contacts\/(\d+)\/associations\/deals$/.exec(p))) return res({ results: H.assoc.filter((a) => a.to === `contacts:${mm[1]}` && a.from.startsWith('deals:')).map((a) => ({ toObjectId: a.from.split(':')[1] })) });
   if ((mm = /^\/crm\/v4\/objects\/contacts\/(\d+)\/associations\/2-58156993$/.exec(p))) return res({ results: H.assoc.filter((a) => a.from === `contacts:${mm[1]}` && a.to.startsWith('2-58156993:')).map((a) => ({ toObjectId: a.to.split(':')[1] })) });
   if (p === '/crm/v3/objects/deals/batch/read') return res({ results: body.inputs.map((i) => H.deals.get(i.id)).filter(Boolean) });
+  if (p === '/crm/v3/objects/contacts/batch/read') return res({ results: body.inputs.map((i) => H.contacts.get(i.id)).filter(Boolean) });
+  if ((mm = /^\/crm\/v4\/objects\/deals\/(\d+)\/associations\/contacts$/.exec(p))) return res({ results: H.assoc.filter((a) => a.from === `deals:${mm[1]}` && a.to.startsWith('contacts:')).map((a) => ({ toObjectId: a.to.split(':')[1] })) });
   if (p === '/files/v3/files') { H.files += 1; return res({ id: `file-${H.files}` }); }
   if (p === '/crm/v3/objects/notes') { H.notes.push(body); return res({ id: `note-${H.notes.length}` }); }
   throw new Error(`unhandled HubSpot ${m} ${p}`);
@@ -425,6 +427,57 @@ await t('teacher form: /<trip>/teacher — own form, signs own waiver, no deposi
   // Staff can approve under the other role.
   const ov = await svc({ action: 'approve-teacher', id: row.id, role: 'Trip Leader' });
   assert.equal(ov.body.app.approval.label, 'Trip Leader');
+});
+
+await t('payment failed: emails the family + team, for deposits AND portal payments, once', async () => {
+  const PF = await import('../netlify/functions/_lib/payment-failed.mjs');
+  const pis = { pi_card: { id: 'pi_card', last_payment_error: { type: 'card_error', decline_code: 'insufficient_funds', message: 'Your card has insufficient funds.' } }, pi_none: null };
+  PF.__setStripe(async (id) => pis[id] || null);
+  const { default: webhook } = await import('../netlify/functions/stripe-webhook.mjs');
+  const send = async (type, obj) => {
+    const ev = JSON.stringify({ id: `evt_${Math.random()}`, type, data: { object: obj } });
+    const ts = Math.floor(Date.now() / 1000);
+    const sig = crypto.createHmac('sha256', 'whsec').update(`${ts}.${ev}`).digest('hex');
+    return webhook(new Request('https://apply.test/api/stripe-webhook', { method: 'POST', body: ev, headers: { 'stripe-signature': `t=${ts},v1=${sig}` } }));
+  };
+  // A new applicant whose NZ bank-debit deposit fails days later.
+  const r = await call({ action: 'start', trip: 'otago-borneo-2027', values: { name: { first: 'Pita', last: 'Fail' }, email: 'pita@fail.nz', dob: '2010-01-01' } });
+  const [app] = await sql.query(`SELECT id FROM ue_applications WHERE email = 'pita@fail.nz'`);
+  await pool.query(`UPDATE ue_applications SET answers = answers || '{"parent1Email":"mum@fail.nz"}'::jsonb, deposit = '{"status":"processing","method":"bank"}' WHERE id = $1`, [app.id]);
+  const before = mails.length;
+  const session = { id: 'cs_bankfail', mode: 'payment', payment_status: 'unpaid', amount_total: 175000, currency: 'nzd', payment_intent: 'pi_bank', metadata: { source: 'ue-apply', application_id: app.id }, customer_details: { email: 'mum@fail.nz' } };
+  assert.equal((await send('checkout.session.async_payment_failed', session)).status, 200);
+  const fam = mails.slice(before).find((m) => /didn't go through/.test(m.subject));
+  assert.ok(fam, 'family email'); assert.equal(fam.to, 'pita@fail.nz'); assert.match(fam.cc, /mum@fail\.nz/);
+  assert.match(fam.text, /NZD 1,750 deposit/); assert.match(fam.text, /\/otago-borneo-2027\?t=/);
+  const staff = mails.slice(before).find((m) => /^Payment failed/.test(m.subject));
+  assert.ok(staff && staff.to === 'team@ue.test'); assert.match(staff.text, /bank debit that failed after checkout/);
+  const [after] = await sql.query(`SELECT deposit FROM ue_applications WHERE id = $1`, [app.id]);
+  assert.equal(after.deposit.status, 'failed');
+  // The deposit page now says so.
+  const tok = new URL(fam.text.match(/https:\S+\?t=\S+/)[0]).searchParams.get('t');
+  assert.equal((await call(null, `?token=${encodeURIComponent(tok)}`)).body.app.deposit.status, 'failed');
+  // Stripe retries the same event: no second email.
+  const n1 = mails.length; await send('checkout.session.async_payment_failed', session); assert.equal(mails.length, n1);
+
+  // A portal payment (not this site's): card declined, checkout expired → payer + deal contacts.
+  H.contacts.set('501', { id: '501', properties: { email: 'kid@portal.nz' } }); H.contacts.set('502', { id: '502', properties: { email: 'dad@portal.nz' } });
+  H.deals.set('900', { id: '900', properties: { dealname: 'Kid Portal — Nepal 2028' } });
+  H.assoc.push({ from: 'deals:900', to: 'contacts:501' }, { from: 'deals:900', to: 'contacts:502' });
+  const n2 = mails.length;
+  await send('checkout.session.expired', { id: 'cs_portal', mode: 'payment', payment_status: 'unpaid', amount_total: 137500, currency: 'nzd', payment_intent: 'pi_card', metadata: { hubspot_deal_id: '900' }, customer_details: { email: 'dad@portal.nz' } });
+  const pf = mails.slice(n2).find((m) => /didn't go through/.test(m.subject));
+  assert.ok(pf, 'portal family email'); assert.equal(pf.to, 'dad@portal.nz'); assert.match(pf.cc, /kid@portal\.nz/);
+  assert.match(pf.text, /NZD 1,375 payment for Kid Portal \(Nepal 2028\)/); assert.match(pf.text, /enough funds/);
+  assert.ok(mails.slice(n2).some((m) => /^Payment failed — Kid Portal/.test(m.subject)));
+  // Expired without anyone trying to pay: nothing.
+  const n3 = mails.length;
+  await send('checkout.session.expired', { id: 'cs_walkaway', mode: 'payment', payment_status: 'unpaid', amount_total: 100, currency: 'nzd', payment_intent: null, metadata: {} });
+  assert.equal(mails.length, n3);
+  // Switch off.
+  process.env.UE_PAYMENT_FAILED_EMAILS = 'off';
+  await send('checkout.session.expired', { id: 'cs_off', mode: 'payment', payment_status: 'unpaid', amount_total: 100, currency: 'nzd', payment_intent: 'pi_card', metadata: {} });
+  assert.equal(mails.length, n3); delete process.env.UE_PAYMENT_FAILED_EMAILS;
 });
 
 await pool.end();
